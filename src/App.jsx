@@ -10,6 +10,7 @@ import {
   onSnapshot,
   query,
   orderBy,
+  setDoc,
   serverTimestamp,
   increment,
   writeBatch,
@@ -114,6 +115,190 @@ function generateOrderNumber() {
   return `NB-${time}${random}`;
 }
 
+const DEFAULT_SITE = {
+  logoUrl: "",
+  announcement: "✦ أهلاً بكم في عالم النابع للعطور ✦",
+  aboutTitle: "النابع...",
+  aboutHighlight: "أثرٌ لا يُنسى",
+  aboutText:
+    "نؤمن أن العطر أكثر من مجرد رائحة؛ إنه ذكرى وهوية وتفاصيل صغيرة تصنع حضورًا لا يُنسى.",
+};
+
+// يسمح فقط بروابط https/http أو روابط داخلية
+function isSafeLink(link) {
+  return /^(https?:\/\/|#|\/)/.test(String(link || "").trim());
+}
+
+function BrandMark({ logoUrl }) {
+  if (logoUrl) {
+    return (
+      <img
+        src={logoUrl}
+        alt="شعار النابع"
+        style={{
+          height: "46px",
+          width: "auto",
+          maxWidth: "130px",
+          objectFit: "contain",
+          display: "block",
+        }}
+      />
+    );
+  }
+
+  return <span className="brand-symbol">ن</span>;
+}
+
+function BannerSlider({ banners }) {
+  const [index, setIndex] = useState(0);
+  const count = banners.length;
+
+  useEffect(() => {
+    if (count < 2) return undefined;
+
+    const timer = setInterval(() => {
+      setIndex((current) => (current + 1) % count);
+    }, 5000);
+
+    return () => clearInterval(timer);
+  }, [count]);
+
+  if (count === 0) return null;
+
+  const current = Math.min(index, count - 1);
+  const banner = banners[current];
+  const linked = isSafeLink(banner.link);
+  const external = /^https?:\/\//.test(String(banner.link || ""));
+
+  const slide = (
+    <div style={{ position: "relative" }}>
+      <img
+        src={banner.image}
+        alt={banner.title || "عرض من النابع"}
+        style={{
+          width: "100%",
+          aspectRatio: "16 / 6",
+          minHeight: "170px",
+          maxHeight: "460px",
+          objectFit: "cover",
+          display: "block",
+        }}
+      />
+
+      {(banner.title || banner.subtitle) && (
+        <div
+          style={{
+            position: "absolute",
+            right: 0,
+            left: 0,
+            bottom: 0,
+            padding: "40px 7% 38px",
+            background:
+              "linear-gradient(to top, rgba(0,0,0,0.72), rgba(0,0,0,0))",
+            color: "#f7f2e8",
+          }}
+        >
+          {banner.title && (
+            <h2 style={{ margin: "0 0 6px", color: "#e8d29b" }}>
+              {banner.title}
+            </h2>
+          )}
+
+          {banner.subtitle && <p style={{ margin: 0 }}>{banner.subtitle}</p>}
+        </div>
+      )}
+    </div>
+  );
+
+  const arrowStyle = {
+    position: "absolute",
+    top: "50%",
+    transform: "translateY(-50%)",
+    width: "40px",
+    height: "40px",
+    border: "none",
+    borderRadius: "50%",
+    background: "rgba(16,16,14,0.65)",
+    color: "#e8d29b",
+    fontSize: "24px",
+    cursor: "pointer",
+    zIndex: 2,
+  };
+
+  return (
+    <section
+      aria-label="العروض"
+      style={{ position: "relative", background: "#10100e" }}
+    >
+      {linked ? (
+        <a
+          href={banner.link}
+          target={external ? "_blank" : undefined}
+          rel={external ? "noopener noreferrer" : undefined}
+          style={{ display: "block", color: "inherit" }}
+        >
+          {slide}
+        </a>
+      ) : (
+        slide
+      )}
+
+      {count > 1 && (
+        <>
+          <button
+            type="button"
+            aria-label="التالي"
+            onClick={() => setIndex((current + 1) % count)}
+            style={{ ...arrowStyle, left: "12px" }}
+          >
+            ‹
+          </button>
+
+          <button
+            type="button"
+            aria-label="السابق"
+            onClick={() => setIndex((current - 1 + count) % count)}
+            style={{ ...arrowStyle, right: "12px" }}
+          >
+            ›
+          </button>
+
+          <div
+            style={{
+              position: "absolute",
+              bottom: "12px",
+              left: 0,
+              right: 0,
+              display: "flex",
+              justifyContent: "center",
+              gap: "8px",
+              zIndex: 2,
+            }}
+          >
+            {banners.map((item, dotIndex) => (
+              <button
+                type="button"
+                key={item.id}
+                aria-label={`الانتقال إلى العرض ${dotIndex + 1}`}
+                onClick={() => setIndex(dotIndex)}
+                style={{
+                  width: "10px",
+                  height: "10px",
+                  padding: 0,
+                  borderRadius: "50%",
+                  border: "1px solid #c9a45c",
+                  background: dotIndex === current ? "#c9a45c" : "transparent",
+                  cursor: "pointer",
+                }}
+              />
+            ))}
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
 function productHasSizes(product) {
   return Array.isArray(product?.sizes) && product.sizes.length > 0;
 }
@@ -159,6 +344,26 @@ function App() {
   const [productSizes, setProductSizes] = useState([]);
   const [selectedProductId, setSelectedProductId] = useState(null);
   const [selectedSize, setSelectedSize] = useState("");
+
+  const [adminTab, setAdminTab] = useState("products");
+
+  const [siteSettings, setSiteSettings] = useState({});
+  const [bannersList, setBannersList] = useState([]);
+
+  const [logoFile, setLogoFile] = useState(null);
+  const [logoPreview, setLogoPreview] = useState("");
+  const [siteAnnouncement, setSiteAnnouncement] = useState("");
+  const [siteAboutTitle, setSiteAboutTitle] = useState("");
+  const [siteAboutHighlight, setSiteAboutHighlight] = useState("");
+  const [siteAboutText, setSiteAboutText] = useState("");
+  const [savingSite, setSavingSite] = useState(false);
+
+  const [bannerFile, setBannerFile] = useState(null);
+  const [bannerPreview, setBannerPreview] = useState("");
+  const [bannerTitle, setBannerTitle] = useState("");
+  const [bannerSubtitle, setBannerSubtitle] = useState("");
+  const [bannerLink, setBannerLink] = useState("");
+  const [savingBanner, setSavingBanner] = useState(false);
 
   const [orders, setOrders] = useState([]);
   const [ordersFilter, setOrdersFilter] = useState("الكل");
@@ -213,6 +418,44 @@ function App() {
 
     return () => unsubscribe();
   }, []);
+
+  // جلب إعدادات الموقع (الشعار والنبذة) والبنرات
+  useEffect(() => {
+    const unsubscribeSettings = onSnapshot(
+      doc(db, "settings", "site"),
+      (snapshot) => {
+        setSiteSettings(snapshot.exists() ? snapshot.data() : {});
+      },
+      (error) => console.error("خطأ في تحميل إعدادات الموقع:", error)
+    );
+
+    const unsubscribeBanners = onSnapshot(
+      collection(db, "banners"),
+      (snapshot) => {
+        setBannersList(
+          snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))
+        );
+      },
+      (error) => console.error("خطأ في تحميل البنرات:", error)
+    );
+
+    return () => {
+      unsubscribeSettings();
+      unsubscribeBanners();
+    };
+  }, []);
+
+  // مزامنة حقول نموذج إعدادات الموقع مع القيم المحفوظة
+  useEffect(() => {
+    const merged = { ...DEFAULT_SITE, ...siteSettings };
+
+    setSiteAnnouncement(merged.announcement);
+    setSiteAboutTitle(merged.aboutTitle);
+    setSiteAboutHighlight(merged.aboutHighlight);
+    setSiteAboutText(merged.aboutText);
+    setLogoPreview(merged.logoUrl || "");
+    setLogoFile(null);
+  }, [siteSettings]);
 
   // جلب الطلبات (للمدير فقط)
   useEffect(() => {
@@ -899,6 +1142,172 @@ function App() {
     }
   }
 
+  const site = { ...DEFAULT_SITE, ...siteSettings };
+
+  const sortedBanners = [...bannersList].sort(
+    (a, b) => Number(a.order || 0) - Number(b.order || 0)
+  );
+
+  const activeBanners = sortedBanners.filter(
+    (banner) => banner.active !== false && banner.image
+  );
+
+  // حفظ إعدادات الموقع (الشعار + النبذة + شريط الإعلان)
+  async function saveSiteSettings(event) {
+    event.preventDefault();
+
+    if (!isAdmin) {
+      alert("غير مصرح لك بتعديل إعدادات الموقع.");
+      return;
+    }
+
+    if (!siteAboutText.trim()) {
+      alert("يرجى كتابة نص النبذة.");
+      return;
+    }
+
+    setSavingSite(true);
+
+    try {
+      let logoUrl = siteSettings.logoUrl || "";
+
+      if (logoFile) {
+        logoUrl = await uploadProductImage(logoFile);
+      }
+
+      await setDoc(
+        doc(db, "settings", "site"),
+        {
+          logoUrl,
+          announcement: siteAnnouncement.trim(),
+          aboutTitle: siteAboutTitle.trim(),
+          aboutHighlight: siteAboutHighlight.trim(),
+          aboutText: siteAboutText.trim(),
+        },
+        { merge: true }
+      );
+
+      alert("تم حفظ إعدادات الموقع.");
+    } catch (error) {
+      console.error("خطأ في حفظ إعدادات الموقع:", error);
+      alert("تعذر حفظ الإعدادات: " + (error.message || "خطأ غير معروف"));
+    } finally {
+      setSavingSite(false);
+    }
+  }
+
+  // الرجوع إلى الشعار الافتراضي (حرف ن)
+  async function removeLogo() {
+    if (!isAdmin) return;
+
+    if (!window.confirm("هل تريد الرجوع إلى الشعار الافتراضي؟")) return;
+
+    try {
+      await setDoc(doc(db, "settings", "site"), { logoUrl: "" }, { merge: true });
+    } catch (error) {
+      console.error("خطأ في إزالة الشعار:", error);
+      alert("تعذر إزالة الشعار.");
+    }
+  }
+
+  // إضافة بنر جديد
+  async function addBanner(event) {
+    event.preventDefault();
+
+    if (!isAdmin) {
+      alert("غير مصرح لك بإضافة البنرات.");
+      return;
+    }
+
+    if (!bannerFile) {
+      alert("يرجى اختيار صورة البنر.");
+      return;
+    }
+
+    if (bannerLink.trim() && !isSafeLink(bannerLink)) {
+      alert("الرابط يجب أن يبدأ بـ https:// أو # (مثل #products).");
+      return;
+    }
+
+    setSavingBanner(true);
+
+    try {
+      const image = await uploadProductImage(bannerFile);
+
+      await addDoc(collection(db, "banners"), {
+        image,
+        title: bannerTitle.trim(),
+        subtitle: bannerSubtitle.trim(),
+        link: bannerLink.trim(),
+        active: true,
+        order: Date.now(),
+      });
+
+      setBannerFile(null);
+      setBannerPreview("");
+      setBannerTitle("");
+      setBannerSubtitle("");
+      setBannerLink("");
+
+      alert("تمت إضافة البنر بنجاح.");
+    } catch (error) {
+      console.error("خطأ في إضافة البنر:", error);
+      alert("تعذر إضافة البنر: " + (error.message || "خطأ غير معروف"));
+    } finally {
+      setSavingBanner(false);
+    }
+  }
+
+  async function toggleBanner(banner) {
+    if (!isAdmin) return;
+
+    try {
+      await updateDoc(doc(db, "banners", banner.id), {
+        active: banner.active === false,
+      });
+    } catch (error) {
+      console.error("خطأ في تحديث البنر:", error);
+      alert("تعذر تحديث البنر.");
+    }
+  }
+
+  async function deleteBanner(banner) {
+    if (!isAdmin) return;
+
+    if (!window.confirm("هل أنت متأكد من حذف هذا البنر؟")) return;
+
+    try {
+      await deleteDoc(doc(db, "banners", banner.id));
+    } catch (error) {
+      console.error("خطأ في حذف البنر:", error);
+      alert("تعذر حذف البنر.");
+    }
+  }
+
+  // تحريك البنر للأعلى أو للأسفل بتبديل ترتيبه مع المجاور
+  async function moveBanner(index, direction) {
+    if (!isAdmin) return;
+
+    const target = index + direction;
+
+    if (target < 0 || target >= sortedBanners.length) return;
+
+    const first = sortedBanners[index];
+    const second = sortedBanners[target];
+
+    try {
+      const batch = writeBatch(db);
+
+      batch.update(doc(db, "banners", first.id), { order: second.order });
+      batch.update(doc(db, "banners", second.id), { order: first.order });
+
+      await batch.commit();
+    } catch (error) {
+      console.error("خطأ في ترتيب البنرات:", error);
+      alert("تعذر تغيير الترتيب.");
+    }
+  }
+
   // فحص الطلب الجديد: هل الأسعار والإجمالي تطابق بيانات المتجر الحالية؟
   function getOrderIssues(order) {
     if (order.status !== "جديد") return [];
@@ -957,11 +1366,13 @@ function App() {
 
   return (
     <div className="store" dir="rtl">
-      <div className="announcement">✦ أهلاً بكم في عالم النابع للعطور ✦</div>
+      {site.announcement && (
+        <div className="announcement">{site.announcement}</div>
+      )}
 
       <header className="header">
         <a className="brand" href="#home">
-          <span className="brand-symbol">ن</span>
+          <BrandMark logoUrl={site.logoUrl} />
           <span>
             <strong>النابع</strong>
             <small>AL NABEA PERFUMES</small>
@@ -1054,6 +1465,38 @@ function App() {
               </button>
             </div>
 
+            <div
+              style={{
+                display: "flex",
+                gap: "8px",
+                flexWrap: "wrap",
+                justifyContent: "center",
+                margin: "0 0 25px",
+              }}
+            >
+              {[
+                ["products", "المنتجات"],
+                [
+                  "orders",
+                  newOrdersCount > 0
+                    ? `الطلبات (${newOrdersCount} جديد)`
+                    : "الطلبات",
+                ],
+                ["site", "الموقع والبنرات"],
+              ].map(([key, label]) => (
+                <button
+                  type="button"
+                  key={key}
+                  className={adminTab === key ? "category active" : "category"}
+                  onClick={() => setAdminTab(key)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {adminTab === "products" && (
+              <>
             <form
               onSubmit={saveProduct}
               style={{
@@ -1358,6 +1801,11 @@ function App() {
               )}
             </div>
 
+              </>
+            )}
+
+            {adminTab === "orders" && (
+              <>
             <h3
               style={{
                 color: "#e8d29b",
@@ -1552,8 +2000,281 @@ function App() {
                 <p className="empty-message">لا توجد طلبات.</p>
               )}
             </div>
+              </>
+            )}
+
+            {adminTab === "site" && (
+              <div style={{ maxWidth: "760px", margin: "0 auto" }}>
+                <h3 style={{ color: "#e8d29b", textAlign: "center" }}>
+                  إعدادات الموقع
+                </h3>
+
+                <form
+                  onSubmit={saveSiteSettings}
+                  style={{ display: "grid", gap: "14px", marginBottom: "50px" }}
+                >
+                  <label>
+                    شعار الموقع
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={(event) => {
+                        const file = event.target.files?.[0];
+
+                        if (file) {
+                          setLogoFile(file);
+                          setLogoPreview(URL.createObjectURL(file));
+                        }
+                      }}
+                      style={adminInputStyle}
+                    />
+                  </label>
+
+                  <div style={{ textAlign: "center" }}>
+                    <p style={{ color: "#aaa59a", margin: "0 0 10px" }}>
+                      معاينة الشعار (يُفضّل صورة شفافة PNG)
+                    </p>
+
+                    <div
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "12px",
+                        padding: "12px 20px",
+                        border: "1px solid #494131",
+                        background: "#10100e",
+                      }}
+                    >
+                      <BrandMark logoUrl={logoPreview} />
+                      <strong style={{ color: "#e8d29b" }}>النابع</strong>
+                    </div>
+
+                    {site.logoUrl && (
+                      <div style={{ marginTop: "10px" }}>
+                        <button
+                          type="button"
+                          className="add-button"
+                          onClick={removeLogo}
+                        >
+                          الرجوع للشعار الافتراضي
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  <label>
+                    الشريط العلوي (اتركه فارغًا لإخفائه)
+                    <input
+                      value={siteAnnouncement}
+                      onChange={(event) =>
+                        setSiteAnnouncement(event.target.value)
+                      }
+                      maxLength={120}
+                      style={adminInputStyle}
+                    />
+                  </label>
+
+                  <label>
+                    عنوان النبذة
+                    <input
+                      value={siteAboutTitle}
+                      onChange={(event) => setSiteAboutTitle(event.target.value)}
+                      maxLength={60}
+                      style={adminInputStyle}
+                    />
+                  </label>
+
+                  <label>
+                    الجزء المميز من العنوان (يظهر بلون ذهبي)
+                    <input
+                      value={siteAboutHighlight}
+                      onChange={(event) =>
+                        setSiteAboutHighlight(event.target.value)
+                      }
+                      maxLength={60}
+                      style={adminInputStyle}
+                    />
+                  </label>
+
+                  <label>
+                    نص النبذة عن الموقع
+                    <textarea
+                      value={siteAboutText}
+                      onChange={(event) => setSiteAboutText(event.target.value)}
+                      rows={6}
+                      maxLength={2000}
+                      style={adminInputStyle}
+                    />
+                  </label>
+
+                  <button
+                    type="submit"
+                    className="checkout-button"
+                    disabled={savingSite}
+                  >
+                    {savingSite ? "جارٍ الحفظ..." : "حفظ إعدادات الموقع"}
+                  </button>
+                </form>
+
+                <h3 style={{ color: "#e8d29b", textAlign: "center" }}>
+                  البنرات ({sortedBanners.length})
+                </h3>
+
+                <form
+                  onSubmit={addBanner}
+                  style={{ display: "grid", gap: "14px", marginBottom: "30px" }}
+                >
+                  <label>
+                    صورة البنر (المقاس المفضل 1600×600)
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={(event) => {
+                        const file = event.target.files?.[0];
+
+                        if (file) {
+                          setBannerFile(file);
+                          setBannerPreview(URL.createObjectURL(file));
+                        }
+                      }}
+                      style={adminInputStyle}
+                    />
+                  </label>
+
+                  {bannerPreview && (
+                    <img
+                      src={bannerPreview}
+                      alt="معاينة البنر"
+                      style={{
+                        width: "100%",
+                        maxHeight: "200px",
+                        objectFit: "cover",
+                        border: "1px solid #494131",
+                      }}
+                    />
+                  )}
+
+                  <label>
+                    عنوان البنر (اختياري)
+                    <input
+                      value={bannerTitle}
+                      onChange={(event) => setBannerTitle(event.target.value)}
+                      maxLength={80}
+                      placeholder="مثال: خصم 20% على عطور العود"
+                      style={adminInputStyle}
+                    />
+                  </label>
+
+                  <label>
+                    نص فرعي (اختياري)
+                    <input
+                      value={bannerSubtitle}
+                      onChange={(event) => setBannerSubtitle(event.target.value)}
+                      maxLength={140}
+                      style={adminInputStyle}
+                    />
+                  </label>
+
+                  <label>
+                    رابط عند الضغط على البنر (اختياري)
+                    <input
+                      value={bannerLink}
+                      onChange={(event) => setBannerLink(event.target.value)}
+                      placeholder="#products أو https://..."
+                      dir="ltr"
+                      style={adminInputStyle}
+                    />
+                  </label>
+
+                  <button
+                    type="submit"
+                    className="checkout-button"
+                    disabled={savingBanner}
+                  >
+                    {savingBanner ? "جارٍ الرفع..." : "＋ إضافة البنر"}
+                  </button>
+                </form>
+
+                {sortedBanners.map((banner, index) => (
+                  <div
+                    key={banner.id}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      flexWrap: "wrap",
+                      gap: "12px",
+                      padding: "12px",
+                      marginBottom: "10px",
+                      border: "1px solid #494131",
+                      background: "#10100e",
+                      opacity: banner.active === false ? 0.55 : 1,
+                    }}
+                  >
+                    <img
+                      src={banner.image}
+                      alt={banner.title || "بنر"}
+                      style={{
+                        width: "140px",
+                        height: "56px",
+                        objectFit: "cover",
+                      }}
+                    />
+
+                    <div style={{ flex: 1, minWidth: "140px", color: "#f7f2e8" }}>
+                      <strong>{banner.title || "بدون عنوان"}</strong>
+                      <div style={{ color: "#aaa59a", fontSize: "13px" }}>
+                        {banner.active === false ? "مخفي" : "ظاهر"}
+                        {banner.link ? ` • ${banner.link}` : ""}
+                      </div>
+                    </div>
+
+                    <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                      <button
+                        type="button"
+                        className="add-button"
+                        disabled={index === 0}
+                        onClick={() => moveBanner(index, -1)}
+                      >
+                        ↑
+                      </button>
+
+                      <button
+                        type="button"
+                        className="add-button"
+                        disabled={index === sortedBanners.length - 1}
+                        onClick={() => moveBanner(index, 1)}
+                      >
+                        ↓
+                      </button>
+
+                      <button
+                        type="button"
+                        className="add-button"
+                        onClick={() => toggleBanner(banner)}
+                      >
+                        {banner.active === false ? "إظهار" : "إخفاء"}
+                      </button>
+
+                      <button
+                        type="button"
+                        className="add-button"
+                        onClick={() => deleteBanner(banner)}
+                      >
+                        حذف
+                      </button>
+                    </div>
+                  </div>
+                ))}
+
+                {sortedBanners.length === 0 && (
+                  <p className="empty-message">لا توجد بنرات بعد.</p>
+                )}
+              </div>
+            )}
           </section>
         )}
+
+        <BannerSlider banners={activeBanners} />
 
         <section className="hero" id="home">
           <div className="hero-content">
@@ -1869,13 +2590,10 @@ function App() {
           <span className="eyebrow">قصتنا في العطور</span>
 
           <h2>
-            النابع... <span>أثرٌ لا يُنسى</span>
+            {site.aboutTitle} <span>{site.aboutHighlight}</span>
           </h2>
 
-          <p>
-            نؤمن أن العطر أكثر من مجرد رائحة؛ إنه ذكرى وهوية وتفاصيل صغيرة تصنع
-            حضورًا لا يُنسى.
-          </p>
+          <p style={{ whiteSpace: "pre-line" }}>{site.aboutText}</p>
         </section>
       </main>
 
@@ -2025,7 +2743,7 @@ function App() {
 
       <footer className="footer">
         <a className="brand footer-brand" href="#home">
-          <span className="brand-symbol">ن</span>
+          <BrandMark logoUrl={site.logoUrl} />
 
           <span>
             <strong>النابع</strong>
