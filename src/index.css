@@ -109,3 +109,10 @@ code {
   padding: 4px 8px;
   background: var(--code-bg);
 }
+.admin-section h2 {
+  color: var(--accent);
+}
+
+.admin-section h2 span {
+  color: inherit;
+}
