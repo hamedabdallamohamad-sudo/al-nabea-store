@@ -1,4 +1,3 @@
-
 import { useState, useEffect } from "react";
 import { db, auth } from "./firebase";
 
@@ -19,10 +18,8 @@ import {
 
 import "./App.css";
 
-
 const CLOUDINARY_CLOUD_NAME = "l4e38mhl";
 const CLOUDINARY_UPLOAD_PRESET = "alnabea_products";
-
 
 async function uploadProductImage(file) {
   const formData = new FormData();
@@ -84,10 +81,11 @@ function App() {
 
   const [productName, setProductName] = useState("");
   const [productPrice, setProductPrice] = useState("");
-  const [productCategory, setProductCategory] =
-    useState("عطور رجالية");
+  const [productCategory, setProductCategory] = useState("عطور رجالية");
   const [productDescription, setProductDescription] = useState("");
   const [productStock, setProductStock] = useState("10");
+  const [productImageFile, setProductImageFile] = useState(null);
+  const [productImagePreview, setProductImagePreview] = useState("");
   const [editingId, setEditingId] = useState(null);
   const [savingProduct, setSavingProduct] = useState(false);
 
@@ -140,8 +138,7 @@ function App() {
   // البحث والتصنيف
   const filteredProducts = products.filter((product) => {
     const matchesCategory =
-      activeCategory === "الكل" ||
-      product.category === activeCategory;
+      activeCategory === "الكل" || product.category === activeCategory;
 
     const matchesSearch = (product.name || "")
       .toLowerCase()
@@ -160,9 +157,7 @@ function App() {
     }
 
     setCart((currentCart) => {
-      const existing = currentCart.find(
-        (item) => item.id === product.id
-      );
+      const existing = currentCart.find((item) => item.id === product.id);
 
       const currentQuantity = existing ? existing.quantity : 0;
 
@@ -230,8 +225,9 @@ function App() {
       `الإجمالي: ${total} ريال\n\n` +
       `الاسم:\nالعنوان:\nطريقة الدفع:`;
 
-    const whatsappUrl =
-      `https://wa.me/966501369866?text=${encodeURIComponent(message)}`;
+    const whatsappUrl = `https://wa.me/966501369866?text=${encodeURIComponent(
+      message
+    )}`;
 
     window.open(whatsappUrl, "_blank", "noopener,noreferrer");
   }
@@ -269,7 +265,7 @@ function App() {
       ) {
         alert("البريد الإلكتروني أو كلمة المرور غير صحيحة.");
       } else {
-       alert("رمز الخطأ: " + error.code + " | التفاصيل: " + error.message);
+        alert("رمز الخطأ: " + error.code + " | التفاصيل: " + error.message);
       }
     }
   }
@@ -327,38 +323,51 @@ function App() {
       return;
     }
 
-    const productData = {
-  name: productName.trim(),
-  price,
-  category: productCategory,
-  description: productDescription.trim(),
-  stock,
-  icon: "✨",
-  image: "/images/nabea-royal.jpg",
-};
-
     setSavingProduct(true);
 
     try {
+      const existingImage =
+        editingId !== null
+          ? products.find((product) => product.id === editingId)?.image || ""
+          : "";
+
+      let imageUrl = existingImage;
+
+      if (productImageFile) {
+        imageUrl = await uploadProductImage(productImageFile);
+      }
+
+      if (!imageUrl) {
+        alert("يرجى اختيار صورة للمنتج.");
+        return;
+      }
+
+      const productData = {
+        name: productName.trim(),
+        price,
+        category: productCategory,
+        description: productDescription.trim(),
+        stock,
+        icon: "✨",
+        image: imageUrl,
+      };
+
       if (editingId !== null) {
-        await updateDoc(
-          doc(db, "products", editingId),
-          productData
-        );
+        await updateDoc(doc(db, "products", editingId), productData);
       } else {
         await addDoc(collection(db, "products"), productData);
       }
 
+      const wasEditing = editingId !== null;
+
       clearProductForm();
 
       alert(
-        editingId !== null
-          ? "تم تحديث المنتج بنجاح."
-          : "تمت إضافة المنتج بنجاح."
+        wasEditing ? "تم تحديث المنتج بنجاح." : "تمت إضافة المنتج بنجاح."
       );
     } catch (error) {
       console.error("خطأ في حفظ المنتج:", error);
-      alert("تعذر حفظ المنتج. تحقق من اتصال Firebase وصلاحيات الكتابة.");
+      alert("تعذر حفظ المنتج: " + (error.message || "خطأ غير معروف"));
     } finally {
       setSavingProduct(false);
     }
@@ -378,6 +387,9 @@ function App() {
     setProductDescription(product.description || "");
     setProductStock(String(product.stock ?? 10));
 
+    setProductImageFile(null);
+    setProductImagePreview(product.image || "");
+
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
@@ -388,18 +400,14 @@ function App() {
       return;
     }
 
-    const confirmed = window.confirm(
-      "هل أنت متأكد من حذف هذا المنتج؟"
-    );
+    const confirmed = window.confirm("هل أنت متأكد من حذف هذا المنتج؟");
 
     if (!confirmed) return;
 
     try {
       await deleteDoc(doc(db, "products", id));
 
-      setCart((current) =>
-        current.filter((item) => item.id !== id)
-      );
+      setCart((current) => current.filter((item) => item.id !== id));
 
       if (editingId === id) {
         clearProductForm();
@@ -420,13 +428,13 @@ function App() {
     setProductDescription("");
     setProductStock("10");
     setEditingId(null);
+    setProductImageFile(null);
+    setProductImagePreview("");
   }
 
   return (
     <div className="store" dir="rtl">
-      <div className="announcement">
-        ✦ أهلاً بكم في عالم النابع للعطور ✦
-      </div>
+      <div className="announcement">✦ أهلاً بكم في عالم النابع للعطور ✦</div>
 
       <header className="header">
         <a className="brand" href="#home">
@@ -444,8 +452,7 @@ function App() {
         </nav>
 
         <a className="cart-button" href="#cart">
-          🛍️ السلة (
-          {cart.reduce((sum, item) => sum + item.quantity, 0)})
+          🛍️ السلة ({cart.reduce((sum, item) => sum + item.quantity, 0)})
         </a>
 
         <button
@@ -470,9 +477,7 @@ function App() {
                 <input
                   type="email"
                   value={adminEmail}
-                  onChange={(event) =>
-                    setAdminEmail(event.target.value)
-                  }
+                  onChange={(event) => setAdminEmail(event.target.value)}
                   required
                   autoComplete="username"
                   style={adminInputStyle}
@@ -485,9 +490,7 @@ function App() {
                 <input
                   type="password"
                   value={adminPassword}
-                  onChange={(event) =>
-                    setAdminPassword(event.target.value)
-                  }
+                  onChange={(event) => setAdminPassword(event.target.value)}
                   required
                   autoComplete="current-password"
                   style={adminInputStyle}
@@ -542,9 +545,7 @@ function App() {
                 <input
                   required
                   value={productName}
-                  onChange={(event) =>
-                    setProductName(event.target.value)
-                  }
+                  onChange={(event) => setProductName(event.target.value)}
                   placeholder="مثال: عطر النابع الملكي"
                   style={adminInputStyle}
                 />
@@ -558,9 +559,7 @@ function App() {
                   min="0.01"
                   step="0.01"
                   value={productPrice}
-                  onChange={(event) =>
-                    setProductPrice(event.target.value)
-                  }
+                  onChange={(event) => setProductPrice(event.target.value)}
                   placeholder="مثال: 180"
                   style={adminInputStyle}
                 />
@@ -570,9 +569,7 @@ function App() {
                 التصنيف
                 <select
                   value={productCategory}
-                  onChange={(event) =>
-                    setProductCategory(event.target.value)
-                  }
+                  onChange={(event) => setProductCategory(event.target.value)}
                   style={adminInputStyle}
                 >
                   {categories
@@ -593,10 +590,47 @@ function App() {
                     setProductDescription(event.target.value)
                   }
                   placeholder="اكتب وصفًا مختصرًا للعطر"
-                  rows="3"
+                  rows={3}
                   style={adminInputStyle}
                 />
               </label>
+
+              <label>
+                صورة المنتج
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+
+                    if (file) {
+                      setProductImageFile(file);
+                      setProductImagePreview(URL.createObjectURL(file));
+                    }
+                  }}
+                  style={adminInputStyle}
+                />
+              </label>
+
+              {productImagePreview && (
+                <div style={{ textAlign: "center" }}>
+                  <p style={{ marginBottom: "10px", color: "#FFD700" }}>
+                    معاينة صورة المنتج
+                  </p>
+
+                  <img
+                    src={productImagePreview}
+                    alt="معاينة المنتج"
+                    style={{
+                      width: "160px",
+                      height: "160px",
+                      objectFit: "contain",
+                      border: "1px solid #494131",
+                      borderRadius: "8px",
+                    }}
+                  />
+                </div>
+              )}
 
               <label>
                 الكمية المتوفرة في المخزون
@@ -606,9 +640,7 @@ function App() {
                   min="0"
                   step="1"
                   value={productStock}
-                  onChange={(event) =>
-                    setProductStock(event.target.value)
-                  }
+                  onChange={(event) => setProductStock(event.target.value)}
                   style={adminInputStyle}
                 />
               </label>
@@ -667,34 +699,17 @@ function App() {
                   }}
                 >
                   <div>
-                    <strong style={{ color: "#e8d29b" }}>
-                      {product.name}
-                    </strong>
+                    <strong style={{ color: "#e8d29b" }}>{product.name}</strong>
 
-                    <p
-                      style={{
-                        color: "#c9a45c",
-                        margin: "5px 0",
-                      }}
-                    >
+                    <p style={{ color: "#c9a45c", margin: "5px 0" }}>
                       السعر: {product.price} ر.س
                     </p>
 
-                    <p
-                      style={{
-                        color: "#aaa59a",
-                        margin: "5px 0",
-                      }}
-                    >
+                    <p style={{ color: "#aaa59a", margin: "5px 0" }}>
                       التصنيف: {product.category}
                     </p>
 
-                    <p
-                      style={{
-                        color: "#aaa59a",
-                        margin: "5px 0",
-                      }}
-                    >
+                    <p style={{ color: "#aaa59a", margin: "5px 0" }}>
                       المخزون: {product.stock ?? 10} قطعة
                     </p>
                   </div>
@@ -739,8 +754,8 @@ function App() {
             </h1>
 
             <p>
-              اكتشف عالمًا من الروائح الاستثنائية،
-              حيث تلتقي الأصالة بالفخامة في كل قطرة.
+              اكتشف عالمًا من الروائح الاستثنائية، حيث تلتقي الأصالة بالفخامة في
+              كل قطرة.
             </p>
 
             <a href="#products" className="primary-button">
@@ -763,15 +778,11 @@ function App() {
               <div className="bottle-body">
                 <span className="bottle-logo">ن</span>
                 <span className="bottle-name">النابع</span>
-                <span className="bottle-subtitle">
-                  LUXURY PERFUME
-                </span>
+                <span className="bottle-subtitle">LUXURY PERFUME</span>
               </div>
             </div>
 
-            <div className="art-label">
-              THE ART OF PERFUMERY
-            </div>
+            <div className="art-label">THE ART OF PERFUMERY</div>
           </div>
         </section>
 
@@ -823,9 +834,7 @@ function App() {
                 type="button"
                 key={category}
                 className={
-                  activeCategory === category
-                    ? "category active"
-                    : "category"
+                  activeCategory === category ? "category active" : "category"
                 }
                 onClick={() => setActiveCategory(category)}
               >
@@ -835,49 +844,35 @@ function App() {
           </div>
 
           {productsLoading ? (
-            <p className="empty-message">
-              جارٍ تحميل المنتجات...
-            </p>
+            <p className="empty-message">جارٍ تحميل المنتجات...</p>
           ) : (
             <div className="product-grid">
               {filteredProducts.map((product) => (
                 <article className="product-card" key={product.id}>
                   <div className="product-image">
-                    <span className="product-tag">
-                      اختيار النابع
-                    </span>
+                    <span className="product-tag">اختيار النابع</span>
 
-                    
+                    <img
+                      src={product.image || "/images/nabea-royal.jpg"}
+                      alt={product.name || "عطر النابع"}
+                      className="product-photo"
+                      style={{
+                        width: "100%",
+                        height: "220px",
+                        objectFit: "contain",
+                        display: "block",
+                      }}
+                      onError={(event) => {
+                        event.currentTarget.onerror = null;
+                        event.currentTarget.src = "/images/nabea-royal.jpg";
+                      }}
+                    />
 
-<img
-  src={product.image || "/images/nabea-royal.jpg"}
-  alt={product.name || "عطر النابع"}
-  className="product-photo"
-  style={{
-    width: "100%",
-    height: "220px",
-    objectFit: "contain",
-    display: "block",
-  }}
-  onError={(event) => {
-    event.currentTarget.onerror = null;
-    event.currentTarget.src = "/images/nabea-royal.jpg";
-  }}
-/>
-
-
-
-
-
-                    <span className="image-caption">
-                      AL NABEA
-                    </span>
+                    <span className="image-caption">AL NABEA</span>
                   </div>
 
                   <div className="product-info">
-                    <span className="product-category">
-                      {product.category}
-                    </span>
+                    <span className="product-category">{product.category}</span>
 
                     <h3>{product.name}</h3>
 
@@ -900,9 +895,7 @@ function App() {
                       </button>
                     </div>
 
-                    <small>
-                      المتوفر: {product.stock ?? 10} قطعة
-                    </small>
+                    <small>المتوفر: {product.stock ?? 10} قطعة</small>
                   </div>
                 </article>
               ))}
@@ -910,9 +903,7 @@ function App() {
           )}
 
           {!productsLoading && filteredProducts.length === 0 && (
-            <p className="empty-message">
-              لا توجد منتجات تطابق بحثك.
-            </p>
+            <p className="empty-message">لا توجد منتجات تطابق بحثك.</p>
           )}
         </section>
 
@@ -956,9 +947,7 @@ function App() {
                       </button>
                     </div>
 
-                    <strong>
-                      {Number(item.price) * item.quantity} ر.س
-                    </strong>
+                    <strong>{Number(item.price) * item.quantity} ر.س</strong>
                   </div>
                 ))}
               </div>
@@ -987,8 +976,8 @@ function App() {
           </h2>
 
           <p>
-            نؤمن أن العطر أكثر من مجرد رائحة؛ إنه ذكرى وهوية
-            وتفاصيل صغيرة تصنع حضورًا لا يُنسى.
+            نؤمن أن العطر أكثر من مجرد رائحة؛ إنه ذكرى وهوية وتفاصيل صغيرة تصنع
+            حضورًا لا يُنسى.
           </p>
         </section>
       </main>
@@ -1014,15 +1003,12 @@ function App() {
           تواصل معنا عبر واتساب
         </a>
 
-
-    <small>
-      © {new Date().getFullYear()} النابع للعطور. جميع الحقوق محفوظة.
-    </small>
-  </footer>
-</div>
-
-
-);
+        <small>
+          © {new Date().getFullYear()} النابع للعطور. جميع الحقوق محفوظة.
+        </small>
+      </footer>
+    </div>
+  );
 }
 
 export default App;
