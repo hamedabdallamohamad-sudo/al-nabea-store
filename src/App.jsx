@@ -397,10 +397,10 @@ function App() {
       });
     }
 
-    const orderTotal = items.reduce(
-      (sum, item) => sum + item.price * item.quantity,
-      0
-    );
+    const orderTotal =
+      Math.round(
+        items.reduce((sum, item) => sum + item.price * item.quantity, 0) * 100
+      ) / 100;
 
     const orderNumber = generateOrderNumber();
 
@@ -435,9 +435,9 @@ function App() {
     const orderDetails = items
       .map(
         (item) =>
-          `• ${item.name}${item.size ? ` (${item.size})` : ""} × ${item.quantity} = ${formatPrice(
-            item.price * item.quantity
-          )} ريال`
+          `• ${item.name}${item.size ? ` (${item.size})` : ""} × ${
+            item.quantity
+          } = ${formatPrice(item.price * item.quantity)} ريال`
       )
       .join("\n");
 
@@ -897,6 +897,53 @@ function App() {
       console.error("خطأ في حذف الطلب:", error);
       alert("تعذر حذف الطلب. تحقق من صلاحيات Firebase.");
     }
+  }
+
+  // فحص الطلب الجديد: هل الأسعار والإجمالي تطابق بيانات المتجر الحالية؟
+  function getOrderIssues(order) {
+    if (order.status !== "جديد") return [];
+
+    const issues = [];
+    const items = order.items || [];
+
+    const computed =
+      Math.round(
+        items.reduce(
+          (sum, item) => sum + Number(item.price) * Number(item.quantity),
+          0
+        ) * 100
+      ) / 100;
+
+    if (Math.abs(computed - Number(order.total)) > 0.01) {
+      issues.push(
+        `الإجمالي المسجّل (${formatPrice(order.total)}) لا يطابق مجموع الأصناف (${formatPrice(computed)})`
+      );
+    }
+
+    for (const item of items) {
+      const product = products.find((p) => p.id === item.productId);
+      const sizeLabel = item.size || "";
+
+      if (!product) {
+        issues.push(`المنتج "${item.name}" لم يعد موجودًا`);
+        continue;
+      }
+
+      if (productHasSizes(product) && !getSizeOption(product, sizeLabel)) {
+        issues.push(`حجم "${item.name}" لم يعد موجودًا`);
+        continue;
+      }
+
+      const currentPrice = getUnitPrice(product, sizeLabel);
+
+      if (Math.abs(currentPrice - Number(item.price)) > 0.001) {
+        issues.push(
+          `سعر "${item.name}" في الطلب (${formatPrice(item.price)}) يختلف عن السعر الحالي (${formatPrice(currentPrice)})`
+        );
+      }
+    }
+
+    return issues;
   }
 
   const newOrdersCount = orders.filter(
@@ -1418,6 +1465,26 @@ function App() {
                   <p style={{ margin: "4px 0", color: "#aaa59a" }}>
                     الدفع: {order.paymentMethod}
                   </p>
+
+                  {getOrderIssues(order).length > 0 && (
+                    <div
+                      style={{
+                        margin: "10px 0",
+                        padding: "10px 12px",
+                        border: "1px solid #b3541e",
+                        background: "#2a1a12",
+                        color: "#ffb48a",
+                        fontSize: "14px",
+                      }}
+                    >
+                      <strong>⚠ تحقق من هذا الطلب قبل تجهيزه:</strong>
+                      <ul style={{ margin: "6px 0 0", paddingRight: "20px" }}>
+                        {getOrderIssues(order).map((issue) => (
+                          <li key={issue}>{issue}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
 
                   <ul style={{ margin: "10px 0", paddingRight: "20px" }}>
                     {(order.items || []).map((item, index) => (
