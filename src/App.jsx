@@ -438,6 +438,27 @@ function App() {
     return () => unsubscribe();
   }, []);
 
+  // نافذة التفاصيل: إغلاق بزر Escape ومنع تمرير الصفحة خلفها
+  useEffect(() => {
+    if (!selectedProductId) return undefined;
+
+    function handleKeyDown(event) {
+      if (event.key === "Escape") {
+        setSelectedProductId(null);
+        setSelectedSize("");
+      }
+    }
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [selectedProductId]);
+
   // جلب إعدادات الموقع (الشعار والنبذة) والبنرات
   useEffect(() => {
     const unsubscribeSettings = onSnapshot(
@@ -2541,7 +2562,24 @@ function App() {
           ) : (
             <div className="product-grid">
               {filteredProducts.map((product) => (
-                <article className="product-card" key={product.id}>
+                <article
+                  className="product-card"
+                  key={product.id}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`عرض تفاصيل ${product.name || "العطر"}`}
+                  onClick={() => openProductDetails(product)}
+                  onKeyDown={(event) => {
+                    if (
+                      event.target === event.currentTarget &&
+                      (event.key === "Enter" || event.key === " ")
+                    ) {
+                      event.preventDefault();
+                      openProductDetails(product);
+                    }
+                  }}
+                  style={{ cursor: "pointer" }}
+                >
                   <div className="product-image">
                     <span className="product-tag">اختيار النابع</span>
 
@@ -2549,7 +2587,6 @@ function App() {
                       src={product.image || "/images/nabea-royal.jpg"}
                       alt={product.name || "عطر النابع"}
                       className="product-photo"
-                      onClick={() => openProductDetails(product)}
                       style={{
                         width: "100%",
                         height: "220px",
@@ -2582,11 +2619,15 @@ function App() {
                       <button
                         type="button"
                         className="add-button"
-                        onClick={() =>
-                          productHasSizes(product)
-                            ? openProductDetails(product)
-                            : addToCart(product)
-                        }
+                        onClick={(event) => {
+                          event.stopPropagation();
+
+                          if (productHasSizes(product)) {
+                            openProductDetails(product);
+                          } else {
+                            addToCart(product);
+                          }
+                        }}
                         disabled={Number(product.stock ?? 10) <= 0}
                       >
                         {Number(product.stock ?? 10) <= 0
@@ -2596,15 +2637,6 @@ function App() {
                             : "+ أضف للسلة"}
                       </button>
                     </div>
-
-                    <button
-                      type="button"
-                      className="add-button"
-                      onClick={() => openProductDetails(product)}
-                      style={{ width: "100%", margin: "8px 0" }}
-                    >
-                      عرض التفاصيل
-                    </button>
 
                     <small>المتوفر: {product.stock ?? 10} قطعة</small>
                   </div>
