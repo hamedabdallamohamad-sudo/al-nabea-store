@@ -327,8 +327,7 @@ function App() {
       return;
     }
 
-    ```javascript
-const productData = {
+    const productData = {
   name: productName.trim(),
   price,
   category: productCategory,
@@ -337,8 +336,6 @@ const productData = {
   icon: "✨",
   image: "/images/nabea-royal.jpg",
 };
-```
-
 
     setSavingProduct(true);
 
@@ -853,8 +850,8 @@ const productData = {
                     
 
 <img
-  src="/images/nabea-royal.jpg"
-  alt="عطر النابع الملكي"
+  src={product.image || "/images/nabea-royal.jpg"}
+  alt={product.name || "عطر النابع"}
   className="product-photo"
   style={{
     width: "100%",
@@ -862,7 +859,12 @@ const productData = {
     objectFit: "contain",
     display: "block",
   }}
+  onError={(event) => {
+    event.currentTarget.onerror = null;
+    event.currentTarget.src = "/images/nabea-royal.jpg";
+  }}
 />
+
 
 
 
