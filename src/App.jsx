@@ -117,6 +117,13 @@ function generateOrderNumber() {
 
 const DEFAULT_SITE = {
   logoUrl: "",
+  storeName: "النابع",
+  storeNameEn: "AL NABEA PERFUMES",
+  whatsapp: "966501369866",
+  instagram: "",
+  tiktok: "",
+  snapchat: "",
+  twitter: "",
   announcement: "✦ أهلاً بكم في عالم النابع للعطور ✦",
   aboutTitle: "النابع...",
   aboutHighlight: "أثرٌ لا يُنسى",
@@ -127,6 +134,11 @@ const DEFAULT_SITE = {
 // يسمح فقط بروابط https/http أو روابط داخلية
 function isSafeLink(link) {
   return /^(https?:\/\/|#|\/)/.test(String(link || "").trim());
+}
+
+// روابط الحسابات الخارجية: https أو http فقط
+function isHttpUrl(link) {
+  return /^https?:\/\/\S+$/.test(String(link || "").trim());
 }
 
 function BrandMark({ logoUrl }) {
@@ -352,6 +364,13 @@ function App() {
 
   const [logoFile, setLogoFile] = useState(null);
   const [logoPreview, setLogoPreview] = useState("");
+  const [siteStoreName, setSiteStoreName] = useState("");
+  const [siteStoreNameEn, setSiteStoreNameEn] = useState("");
+  const [siteWhatsapp, setSiteWhatsapp] = useState("");
+  const [siteInstagram, setSiteInstagram] = useState("");
+  const [siteTiktok, setSiteTiktok] = useState("");
+  const [siteSnapchat, setSiteSnapchat] = useState("");
+  const [siteTwitter, setSiteTwitter] = useState("");
   const [siteAnnouncement, setSiteAnnouncement] = useState("");
   const [siteAboutTitle, setSiteAboutTitle] = useState("");
   const [siteAboutHighlight, setSiteAboutHighlight] = useState("");
@@ -453,6 +472,13 @@ function App() {
     setSiteAboutTitle(merged.aboutTitle);
     setSiteAboutHighlight(merged.aboutHighlight);
     setSiteAboutText(merged.aboutText);
+    setSiteStoreName(merged.storeName);
+    setSiteStoreNameEn(merged.storeNameEn);
+    setSiteWhatsapp(merged.whatsapp);
+    setSiteInstagram(merged.instagram);
+    setSiteTiktok(merged.tiktok);
+    setSiteSnapchat(merged.snapchat);
+    setSiteTwitter(merged.twitter);
     setLogoPreview(merged.logoUrl || "");
     setLogoFile(null);
   }, [siteSettings]);
@@ -685,7 +711,7 @@ function App() {
       .join("\n");
 
     const message =
-      `السلام عليكم، أريد تأكيد طلبي من متجر النابع للعطور\n` +
+      `السلام عليكم، أريد تأكيد طلبي من متجر ${site.storeName}\n` +
       `رقم الطلب: ${orderNumber}\n\n` +
       `${orderDetails}\n\n` +
       `الإجمالي: ${formatPrice(orderTotal)} ريال\n\n` +
@@ -694,7 +720,7 @@ function App() {
       `العنوان: ${address}\n` +
       `طريقة الدفع: ${paymentMethod}`;
 
-    const whatsappUrl = `https://wa.me/966501369866?text=${encodeURIComponent(
+    const whatsappUrl = `https://wa.me/${site.whatsapp}?text=${encodeURIComponent(
       message
     )}`;
 
@@ -1142,7 +1168,21 @@ function App() {
     }
   }
 
-  const site = { ...DEFAULT_SITE, ...siteSettings };
+  const site = {
+    ...DEFAULT_SITE,
+    ...siteSettings,
+    // هذه الحقول لا تقبل القيمة الفارغة
+    storeName: siteSettings.storeName || DEFAULT_SITE.storeName,
+    storeNameEn: siteSettings.storeNameEn || DEFAULT_SITE.storeNameEn,
+    whatsapp: siteSettings.whatsapp || DEFAULT_SITE.whatsapp,
+  };
+
+  const socialLinks = [
+    ["إنستغرام", site.instagram],
+    ["تيك توك", site.tiktok],
+    ["سناب شات", site.snapchat],
+    ["X (تويتر)", site.twitter],
+  ].filter(([, url]) => isHttpUrl(url));
 
   const sortedBanners = [...bannersList].sort(
     (a, b) => Number(a.order || 0) - Number(b.order || 0)
@@ -1166,6 +1206,30 @@ function App() {
       return;
     }
 
+    if (!siteStoreName.trim() || !siteStoreNameEn.trim()) {
+      alert("يرجى إدخال اسم المتجر بالعربي والإنجليزي.");
+      return;
+    }
+
+    const whatsappDigits = normalizePhone(siteWhatsapp);
+
+    if (whatsappDigits.length < 11 || whatsappDigits.length > 15) {
+      alert("يرجى إدخال رقم واتساب صحيح (مثل 0501234567).");
+      return;
+    }
+
+    for (const [label, value] of [
+      ["إنستغرام", siteInstagram],
+      ["تيك توك", siteTiktok],
+      ["سناب شات", siteSnapchat],
+      ["X (تويتر)", siteTwitter],
+    ]) {
+      if (value.trim() && !isHttpUrl(value)) {
+        alert(`رابط ${label} يجب أن يبدأ بـ https://`);
+        return;
+      }
+    }
+
     setSavingSite(true);
 
     try {
@@ -1183,6 +1247,13 @@ function App() {
           aboutTitle: siteAboutTitle.trim(),
           aboutHighlight: siteAboutHighlight.trim(),
           aboutText: siteAboutText.trim(),
+          storeName: siteStoreName.trim(),
+          storeNameEn: siteStoreNameEn.trim(),
+          whatsapp: whatsappDigits,
+          instagram: siteInstagram.trim(),
+          tiktok: siteTiktok.trim(),
+          snapchat: siteSnapchat.trim(),
+          twitter: siteTwitter.trim(),
         },
         { merge: true }
       );
@@ -1374,8 +1445,8 @@ function App() {
         <a className="brand" href="#home">
           <BrandMark logoUrl={site.logoUrl} />
           <span>
-            <strong>النابع</strong>
-            <small>AL NABEA PERFUMES</small>
+            <strong>{site.storeName}</strong>
+            <small>{site.storeNameEn}</small>
           </span>
         </a>
 
@@ -2046,7 +2117,7 @@ function App() {
                       }}
                     >
                       <BrandMark logoUrl={logoPreview} />
-                      <strong style={{ color: "#e8d29b" }}>النابع</strong>
+                      <strong style={{ color: "#e8d29b" }}>{siteStoreName || site.storeName}</strong>
                     </div>
 
                     {site.logoUrl && (
@@ -2061,6 +2132,29 @@ function App() {
                       </div>
                     )}
                   </div>
+
+                  <label>
+                    اسم المتجر بالعربي
+                    <input
+                      value={siteStoreName}
+                      onChange={(event) => setSiteStoreName(event.target.value)}
+                      maxLength={40}
+                      style={adminInputStyle}
+                    />
+                  </label>
+
+                  <label>
+                    اسم المتجر بالإنجليزي (يظهر تحت الاسم العربي)
+                    <input
+                      value={siteStoreNameEn}
+                      onChange={(event) =>
+                        setSiteStoreNameEn(event.target.value)
+                      }
+                      maxLength={60}
+                      dir="ltr"
+                      style={adminInputStyle}
+                    />
+                  </label>
 
                   <label>
                     الشريط العلوي (اتركه فارغًا لإخفائه)
@@ -2103,6 +2197,72 @@ function App() {
                       onChange={(event) => setSiteAboutText(event.target.value)}
                       rows={6}
                       maxLength={2000}
+                      style={adminInputStyle}
+                    />
+                  </label>
+
+                  <h3
+                    style={{
+                      color: "#e8d29b",
+                      textAlign: "center",
+                      margin: "20px 0 0",
+                    }}
+                  >
+                    التواصل والحسابات
+                  </h3>
+
+                  <label>
+                    رقم واتساب لاستقبال الطلبات
+                    <input
+                      type="tel"
+                      value={siteWhatsapp}
+                      onChange={(event) => setSiteWhatsapp(event.target.value)}
+                      placeholder="0501234567"
+                      dir="ltr"
+                      style={adminInputStyle}
+                    />
+                  </label>
+
+                  <label>
+                    رابط إنستغرام (اختياري)
+                    <input
+                      value={siteInstagram}
+                      onChange={(event) => setSiteInstagram(event.target.value)}
+                      placeholder="https://instagram.com/اسم_الحساب"
+                      dir="ltr"
+                      style={adminInputStyle}
+                    />
+                  </label>
+
+                  <label>
+                    رابط تيك توك (اختياري)
+                    <input
+                      value={siteTiktok}
+                      onChange={(event) => setSiteTiktok(event.target.value)}
+                      placeholder="https://tiktok.com/@اسم_الحساب"
+                      dir="ltr"
+                      style={adminInputStyle}
+                    />
+                  </label>
+
+                  <label>
+                    رابط سناب شات (اختياري)
+                    <input
+                      value={siteSnapchat}
+                      onChange={(event) => setSiteSnapchat(event.target.value)}
+                      placeholder="https://snapchat.com/add/اسم_الحساب"
+                      dir="ltr"
+                      style={adminInputStyle}
+                    />
+                  </label>
+
+                  <label>
+                    رابط X / تويتر (اختياري)
+                    <input
+                      value={siteTwitter}
+                      onChange={(event) => setSiteTwitter(event.target.value)}
+                      placeholder="https://x.com/اسم_الحساب"
+                      dir="ltr"
                       style={adminInputStyle}
                     />
                   </label>
@@ -2746,8 +2906,8 @@ function App() {
           <BrandMark logoUrl={site.logoUrl} />
 
           <span>
-            <strong>النابع</strong>
-            <small>AL NABEA PERFUMES</small>
+            <strong>{site.storeName}</strong>
+            <small>{site.storeNameEn}</small>
           </span>
         </a>
 
@@ -2755,15 +2915,39 @@ function App() {
 
         <a
           className="whatsapp-link"
-          href="https://wa.me/966501369866"
+          href={`https://wa.me/${site.whatsapp}`}
           target="_blank"
           rel="noreferrer"
         >
           تواصل معنا عبر واتساب
         </a>
 
+        {socialLinks.length > 0 && (
+          <div
+            style={{
+              display: "flex",
+              gap: "18px",
+              flexWrap: "wrap",
+              justifyContent: "center",
+              margin: "14px 0",
+            }}
+          >
+            {socialLinks.map(([label, url]) => (
+              <a
+                key={label}
+                href={url}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: "#c9a45c" }}
+              >
+                {label}
+              </a>
+            ))}
+          </div>
+        )}
+
         <small>
-          © {new Date().getFullYear()} النابع للعطور. جميع الحقوق محفوظة.
+          © {new Date().getFullYear()} {site.storeName}. جميع الحقوق محفوظة.
         </small>
       </footer>
     </div>
