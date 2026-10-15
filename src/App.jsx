@@ -8,6 +8,11 @@ import {
   deleteDoc,
   doc,
   onSnapshot,
+  query,
+  orderBy,
+  serverTimestamp,
+  increment,
+  writeBatch,
 } from "firebase/firestore";
 
 import {
@@ -69,6 +74,46 @@ const adminInputStyle = {
   boxSizing: "border-box",
 };
 
+const ORDER_STATUSES = [
+  "جديد",
+  "قيد التجهيز",
+  "تم الشحن",
+  "مكتمل",
+  "ملغي",
+];
+
+// الحالات التي يُخصم عندها المخزون
+const STOCK_DEDUCT_STATUSES = ["قيد التجهيز", "تم الشحن", "مكتمل"];
+
+// الحالات التي يُعاد عندها المخزون إن كان قد خُصم
+const STOCK_RESTORE_STATUSES = ["ملغي", "جديد"];
+
+const PAYMENT_METHODS = [
+  "الدفع عند الاستلام",
+  "تحويل بنكي",
+  "رابط دفع إلكتروني",
+];
+
+function formatPrice(value) {
+  const number = Number(value) || 0;
+  return Number.isInteger(number) ? String(number) : number.toFixed(2);
+}
+
+// تحويل الرقم إلى الصيغة الدولية للسعودية (966...)
+function normalizePhone(value) {
+  let digits = String(value).replace(/\D/g, "");
+  if (digits.startsWith("00")) digits = digits.slice(2);
+  if (digits.startsWith("0")) digits = "966" + digits.slice(1);
+  if (digits.length === 9 && digits.startsWith("5")) digits = "966" + digits;
+  return digits;
+}
+
+function generateOrderNumber() {
+  const time = Date.now().toString(36).toUpperCase().slice(-5);
+  const random = Math.random().toString(36).toUpperCase().slice(2, 5);
+  return `NB-${time}${random}`;
+}
+
 function App() {
   const [products, setProducts] = useState([]);
   const [productsLoading, setProductsLoading] = useState(true);
@@ -88,6 +133,14 @@ function App() {
   const [productImagePreview, setProductImagePreview] = useState("");
   const [editingId, setEditingId] = useState(null);
   const [savingProduct, setSavingProduct] = useState(false);
+
+  const [orders, setOrders] = useState([]);
+  const [ordersFilter, setOrdersFilter] = useState("الكل");
+  const [customerName, setCustomerName] = useState("");
+  const [customerPhone, setCustomerPhone] = useState("");
+  const [customerAddress, setCustomerAddress] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState(PAYMENT_METHODS[0]);
+  const [placingOrder, setPlacingOrder] = useState(false);
 
   const [cart, setCart] = useState([]);
   const [activeCategory, setActiveCategory] = useState("الكل");
@@ -134,6 +187,37 @@ function App() {
 
     return () => unsubscribe();
   }, []);
+
+  // جلب الطلبات (للمدير فقط)
+  useEffect(() => {
+    if (!isAdmin) {
+      setOrders([]);
+      return undefined;
+    }
+
+    const ordersQuery = query(
+      collection(db, "orders"),
+      orderBy("createdAt", "desc")
+    );
+
+    const unsubscribe = onSnapshot(
+      ordersQuery,
+      (snapshot) => {
+        setOrders(
+          snapshot.docs.map((item) => ({
+            id: item.id,
+            ...item.data(),
+          }))
+        );
+      },
+      (error) => {
+        console.error("خطأ في تحميل الطلبات:", error);
+        alert("تعذر تحميل الطلبات. تحقق من قواعد Firestore.");
+      }
+    );
+
+    return () => unsubscribe();
+  }, [isAdmin]);
 
   // البحث والتصنيف
   const filteredProducts = products.filter((product) => {
@@ -203,33 +287,131 @@ function App() {
     0
   );
 
-  // تجهيز الطلب عبر واتساب
-  function checkout() {
+  // حفظ الطلب في Firestore ثم إرساله عبر واتساب
+  async function checkout() {
     if (cart.length === 0) {
       alert("سلة المشتريات فارغة!");
       return;
     }
 
-    const orderDetails = cart
+    const name = customerName.trim();
+    const phone = normalizePhone(customerPhone);
+    const address = customerAddress.trim();
+
+    if (name.length < 2) {
+      alert("يرجى إدخال اسمك.");
+      return;
+    }
+
+    if (phone.length < 11 || phone.length > 15) {
+      alert("يرجى إدخال رقم جوال صحيح.");
+      return;
+    }
+
+    if (address.length < 5) {
+      alert("يرجى إدخال عنوان التوصيل.");
+      return;
+    }
+
+    // نعتمد على الأسعار والمخزون الحاليين من قاعدة البيانات لا من السلة
+    const items = [];
+
+    for (const cartItem of cart) {
+      const live = products.find((product) => product.id === cartItem.id);
+
+      if (!live) {
+        alert(`المنتج "${cartItem.name}" لم يعد متوفرًا. تم حذفه من السلة.`);
+        setCart((current) =>
+          current.filter((item) => item.id !== cartItem.id)
+        );
+        return;
+      }
+
+      if (cartItem.quantity > Number(live.stock ?? 10)) {
+        alert(`الكمية المطلوبة من "${live.name}" تتجاوز المخزون المتوفر.`);
+        return;
+      }
+
+      items.push({
+        productId: live.id,
+        name: live.name,
+        price: Number(live.price),
+        quantity: cartItem.quantity,
+      });
+    }
+
+    const orderTotal = items.reduce(
+      (sum, item) => sum + item.price * item.quantity,
+      0
+    );
+
+    const orderNumber = generateOrderNumber();
+
+    // نفتح نافذة واتساب قبل العمليات غير المتزامنة لتجنب حظر المتصفح لها
+    const whatsappWindow = window.open("about:blank", "_blank");
+
+    setPlacingOrder(true);
+
+    try {
+      await addDoc(collection(db, "orders"), {
+        orderNumber,
+        customerName: name,
+        customerPhone: phone,
+        customerAddress: address,
+        paymentMethod,
+        items,
+        total: orderTotal,
+        status: "جديد",
+        stockDeducted: false,
+        createdAt: serverTimestamp(),
+      });
+    } catch (error) {
+      console.error("خطأ في حفظ الطلب:", error);
+
+      if (whatsappWindow) whatsappWindow.close();
+
+      alert("تعذر إرسال الطلب. تحقق من الاتصال وحاول مرة أخرى.");
+      setPlacingOrder(false);
+      return;
+    }
+
+    const orderDetails = items
       .map(
         (item) =>
-          `• ${item.name} × ${item.quantity} = ${
-            Number(item.price) * item.quantity
-          } ريال`
+          `• ${item.name} × ${item.quantity} = ${formatPrice(
+            item.price * item.quantity
+          )} ريال`
       )
       .join("\n");
 
     const message =
-      `السلام عليكم، أريد طلب المنتجات التالية من متجر النابع للعطور:\n\n` +
+      `السلام عليكم، أريد تأكيد طلبي من متجر النابع للعطور\n` +
+      `رقم الطلب: ${orderNumber}\n\n` +
       `${orderDetails}\n\n` +
-      `الإجمالي: ${total} ريال\n\n` +
-      `الاسم:\nالعنوان:\nطريقة الدفع:`;
+      `الإجمالي: ${formatPrice(orderTotal)} ريال\n\n` +
+      `الاسم: ${name}\n` +
+      `الجوال: ${customerPhone.trim()}\n` +
+      `العنوان: ${address}\n` +
+      `طريقة الدفع: ${paymentMethod}`;
 
     const whatsappUrl = `https://wa.me/966501369866?text=${encodeURIComponent(
       message
     )}`;
 
-    window.open(whatsappUrl, "_blank", "noopener,noreferrer");
+    if (whatsappWindow) {
+      whatsappWindow.location.href = whatsappUrl;
+    } else {
+      window.location.href = whatsappUrl;
+    }
+
+    setCart([]);
+    setCustomerName("");
+    setCustomerPhone("");
+    setCustomerAddress("");
+    setPaymentMethod(PAYMENT_METHODS[0]);
+    setPlacingOrder(false);
+
+    alert(`تم تسجيل طلبك برقم ${orderNumber}. شكرًا لك!`);
   }
 
   // تسجيل دخول المدير
@@ -431,6 +613,92 @@ function App() {
     setProductImageFile(null);
     setProductImagePreview("");
   }
+
+  // تغيير حالة الطلب مع خصم المخزون أو إعادته تلقائيًا
+  async function changeOrderStatus(order, newStatus) {
+    if (!isAdmin) {
+      alert("غير مصرح لك بإدارة الطلبات.");
+      return;
+    }
+
+    if (order.status === newStatus) return;
+
+    const shouldDeduct =
+      STOCK_DEDUCT_STATUSES.includes(newStatus) && !order.stockDeducted;
+
+    const shouldRestore =
+      STOCK_RESTORE_STATUSES.includes(newStatus) && order.stockDeducted;
+
+    try {
+      const batch = writeBatch(db);
+      const updates = { status: newStatus };
+
+      if (shouldDeduct || shouldRestore) {
+        for (const item of order.items || []) {
+          const product = products.find((p) => p.id === item.productId);
+
+          // المنتج محذوف: نتجاوز تعديل مخزونه
+          if (!product) continue;
+
+          if (
+            shouldDeduct &&
+            Number(product.stock ?? 10) < item.quantity
+          ) {
+            const proceed = window.confirm(
+              `مخزون "${product.name}" (${product.stock ?? 10}) أقل من الكمية المطلوبة (${item.quantity}). هل تريد المتابعة؟`
+            );
+
+            if (!proceed) return;
+          }
+
+          batch.update(doc(db, "products", item.productId), {
+            stock: increment(shouldDeduct ? -item.quantity : item.quantity),
+          });
+        }
+
+        updates.stockDeducted = shouldDeduct;
+      }
+
+      batch.update(doc(db, "orders", order.id), updates);
+
+      await batch.commit();
+    } catch (error) {
+      console.error("خطأ في تحديث الطلب:", error);
+      alert("تعذر تحديث الطلب. تحقق من صلاحيات Firebase.");
+    }
+  }
+
+  // حذف طلب
+  async function deleteOrder(order) {
+    if (!isAdmin) {
+      alert("غير مصرح لك بحذف الطلبات.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      order.stockDeducted
+        ? "هذا الطلب خُصم مخزونه. حذفه لن يعيد المخزون. هل تريد المتابعة؟"
+        : "هل أنت متأكد من حذف هذا الطلب؟"
+    );
+
+    if (!confirmed) return;
+
+    try {
+      await deleteDoc(doc(db, "orders", order.id));
+    } catch (error) {
+      console.error("خطأ في حذف الطلب:", error);
+      alert("تعذر حذف الطلب. تحقق من صلاحيات Firebase.");
+    }
+  }
+
+  const newOrdersCount = orders.filter(
+    (order) => order.status === "جديد"
+  ).length;
+
+  const visibleOrders =
+    ordersFilter === "الكل"
+      ? orders
+      : orders.filter((order) => order.status === ordersFilter);
 
   return (
     <div className="store" dir="rtl">
@@ -740,6 +1008,180 @@ function App() {
                 </p>
               )}
             </div>
+
+            <h3
+              style={{
+                color: "#e8d29b",
+                textAlign: "center",
+                marginTop: "50px",
+              }}
+            >
+              الطلبات ({orders.length})
+              {newOrdersCount > 0 && (
+                <span
+                  style={{
+                    marginRight: "10px",
+                    padding: "2px 10px",
+                    background: "#c9a45c",
+                    color: "#10100e",
+                    borderRadius: "12px",
+                    fontSize: "14px",
+                  }}
+                >
+                  {newOrdersCount} جديد
+                </span>
+              )}
+            </h3>
+
+            <div
+              style={{
+                display: "flex",
+                gap: "8px",
+                flexWrap: "wrap",
+                justifyContent: "center",
+                margin: "15px 0",
+              }}
+            >
+              {["الكل", ...ORDER_STATUSES].map((status) => (
+                <button
+                  type="button"
+                  key={status}
+                  className={
+                    ordersFilter === status ? "category active" : "category"
+                  }
+                  onClick={() => setOrdersFilter(status)}
+                >
+                  {status}
+                </button>
+              ))}
+            </div>
+
+            <div
+              style={{
+                maxWidth: "900px",
+                margin: "20px auto",
+              }}
+            >
+              {visibleOrders.map((order) => (
+                <div
+                  key={order.id}
+                  style={{
+                    padding: "16px",
+                    marginBottom: "12px",
+                    border:
+                      order.status === "جديد"
+                        ? "1px solid #c9a45c"
+                        : "1px solid #494131",
+                    background: "#10100e",
+                    color: "#f7f2e8",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      flexWrap: "wrap",
+                      gap: "8px",
+                    }}
+                  >
+                    <strong style={{ color: "#e8d29b" }}>
+                      {order.orderNumber}
+                    </strong>
+
+                    <span style={{ color: "#aaa59a", fontSize: "14px" }}>
+                      {order.createdAt?.toDate
+                        ? order.createdAt
+                            .toDate()
+                            .toLocaleString("ar-SA")
+                        : "الآن"}
+                    </span>
+                  </div>
+
+                  <p style={{ margin: "8px 0 4px" }}>
+                    {order.customerName} —{" "}
+                    <a
+                      href={`https://wa.me/${order.customerPhone}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ color: "#c9a45c" }}
+                    >
+                      {order.customerPhone}
+                    </a>
+                  </p>
+
+                  <p style={{ margin: "4px 0", color: "#aaa59a" }}>
+                    العنوان: {order.customerAddress}
+                  </p>
+
+                  <p style={{ margin: "4px 0", color: "#aaa59a" }}>
+                    الدفع: {order.paymentMethod}
+                  </p>
+
+                  <ul style={{ margin: "10px 0", paddingRight: "20px" }}>
+                    {(order.items || []).map((item, index) => (
+                      <li key={`${item.productId}-${index}`}>
+                        {item.name} × {item.quantity} ={" "}
+                        {formatPrice(item.price * item.quantity)} ر.س
+                      </li>
+                    ))}
+                  </ul>
+
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      flexWrap: "wrap",
+                      gap: "10px",
+                    }}
+                  >
+                    <strong style={{ color: "#e8d29b" }}>
+                      الإجمالي: {formatPrice(order.total)} ر.س
+                    </strong>
+
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: "8px",
+                        alignItems: "center",
+                      }}
+                    >
+                      <select
+                        value={order.status}
+                        onChange={(event) =>
+                          changeOrderStatus(order, event.target.value)
+                        }
+                        style={{ ...adminInputStyle, marginTop: 0, width: "auto" }}
+                      >
+                        {ORDER_STATUSES.map((status) => (
+                          <option key={status} value={status}>
+                            {status}
+                          </option>
+                        ))}
+                      </select>
+
+                      <button
+                        type="button"
+                        className="add-button"
+                        onClick={() => deleteOrder(order)}
+                      >
+                        حذف
+                      </button>
+                    </div>
+                  </div>
+
+                  <small style={{ color: "#aaa59a" }}>
+                    {order.stockDeducted
+                      ? "✓ تم خصم المخزون"
+                      : "لم يُخصم المخزون بعد"}
+                  </small>
+                </div>
+              ))}
+
+              {visibleOrders.length === 0 && (
+                <p className="empty-message">لا توجد طلبات.</p>
+              )}
+            </div>
           </section>
         )}
 
@@ -957,12 +1399,76 @@ function App() {
                 <strong>{total} ر.س</strong>
               </div>
 
+              <div
+                style={{
+                  maxWidth: "600px",
+                  margin: "25px auto",
+                  display: "grid",
+                  gap: "14px",
+                }}
+              >
+                <label>
+                  الاسم
+                  <input
+                    value={customerName}
+                    onChange={(event) => setCustomerName(event.target.value)}
+                    autoComplete="name"
+                    placeholder="اسمك الكريم"
+                    style={adminInputStyle}
+                  />
+                </label>
+
+                <label>
+                  رقم الجوال
+                  <input
+                    type="tel"
+                    value={customerPhone}
+                    onChange={(event) => setCustomerPhone(event.target.value)}
+                    autoComplete="tel"
+                    placeholder="05xxxxxxxx"
+                    style={adminInputStyle}
+                  />
+                </label>
+
+                <label>
+                  عنوان التوصيل
+                  <textarea
+                    value={customerAddress}
+                    onChange={(event) =>
+                      setCustomerAddress(event.target.value)
+                    }
+                    autoComplete="street-address"
+                    rows={3}
+                    placeholder="المدينة، الحي، الشارع"
+                    style={adminInputStyle}
+                  />
+                </label>
+
+                <label>
+                  طريقة الدفع
+                  <select
+                    value={paymentMethod}
+                    onChange={(event) => setPaymentMethod(event.target.value)}
+                    style={adminInputStyle}
+                  >
+                    {PAYMENT_METHODS.map((method) => (
+                      <option key={method} value={method}>
+                        {method}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
               <button
                 type="button"
                 className="checkout-button"
                 onClick={checkout}
+                disabled={placingOrder}
               >
-                إتمام الطلب عبر واتساب
+                {placingOrder
+                  ? "جارٍ إرسال الطلب..."
+                  : "تأكيد الطلب وإرساله عبر واتساب"}
               </button>
             </>
           )}
