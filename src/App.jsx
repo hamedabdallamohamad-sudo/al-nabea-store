@@ -633,7 +633,7 @@ const PRINT_CSS = `
 .print-toolbar button { padding: 10px 22px; border: 1px solid #c9a45c; background: #c9a45c; color: #10100e; cursor: pointer; font-weight: bold; font-family: inherit; }
 .print-toolbar button.secondary { background: transparent; color: #e8d29b; }
 .print-stage { padding: 20px 10px 50px; display: flex; justify-content: center; overflow-x: auto; }
-.print-paper { width: 210mm; min-height: 297mm; flex: none; background: #fff; color: #1b1a15; box-sizing: border-box; box-shadow: 0 10px 40px rgba(0,0,0,0.5); -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+.print-paper { width: 210mm; min-height: 297mm; flex: none; display: flex; flex-direction: column; background: #fff; color: #1b1a15; box-sizing: border-box; box-shadow: 0 10px 40px rgba(0,0,0,0.5); -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 .print-paper tr { break-inside: avoid; }
 @media print {
   @page { size: A4; margin: 0; }
@@ -642,7 +642,7 @@ const PRINT_CSS = `
   .print-portal { position: static !important; background: none !important; overflow: visible !important; }
   .no-print { display: none !important; }
   .print-stage { padding: 0 !important; display: block !important; overflow: visible !important; }
-  .print-paper { width: 100% !important; min-height: auto !important; box-shadow: none !important; }
+  .print-paper { width: 100% !important; min-height: 295mm !important; box-shadow: none !important; }
 }
 `;
 
@@ -676,6 +676,67 @@ function PrintPortal({ title, onClose, children }) {
   );
 }
 
+function InvoiceLogo({ logoUrl, size = 78 }) {
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setFailed(false);
+  }, [logoUrl]);
+
+  const gold = "#b8924a";
+  const ink = "#1b1a15";
+
+  if (logoUrl && !failed) {
+    // خلفية داكنة مثل ترويسة الموقع ليظهر الشعار مهما كان لونه
+    return (
+      <div
+        style={{
+          background: ink,
+          padding: "8px 12px",
+          borderRadius: "8px",
+          border: `2px solid ${gold}`,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <img
+          src={logoUrl}
+          alt="شعار المتجر"
+          onError={() => setFailed(true)}
+          style={{
+            height: `${size}px`,
+            width: "auto",
+            maxWidth: "160px",
+            objectFit: "contain",
+            display: "block",
+          }}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div
+      style={{
+        width: `${size}px`,
+        height: `${size}px`,
+        borderRadius: "50%",
+        background: ink,
+        color: "#e8d29b",
+        border: `2px solid ${gold}`,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontSize: `${Math.round(size * 0.5)}px`,
+        fontWeight: "bold",
+      }}
+    >
+      ن
+    </div>
+  );
+}
+
 function InvoiceSheet({ order, site, printedAt }) {
   const issued = toDateSafe(order.invoiceDate) || printedAt;
   const created = toDateSafe(order.createdAt);
@@ -704,13 +765,6 @@ function InvoiceSheet({ order, site, printedAt }) {
   const metaLabel = { color: muted, fontSize: "11px", marginBottom: "3px" };
   const metaValue = { color: ink, fontWeight: "bold", fontSize: "14px" };
 
-  const socials = [
-    ["إنستغرام", site.instagram],
-    ["تيك توك", site.tiktok],
-    ["سناب شات", site.snapchat],
-    ["X", site.twitter],
-  ].filter(([, url]) => isHttpUrl(url));
-
   return (
     <div className="print-paper" dir="rtl">
       <div
@@ -720,7 +774,14 @@ function InvoiceSheet({ order, site, printedAt }) {
         }}
       />
 
-      <div style={{ padding: "12mm 14mm 10mm" }}>
+      <div
+        style={{
+          padding: "12mm 14mm 10mm",
+          flex: 1,
+          display: "flex",
+          flexDirection: "column",
+        }}
+      >
         <div
           style={{
             display: "flex",
@@ -732,31 +793,7 @@ function InvoiceSheet({ order, site, printedAt }) {
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
-            {site.logoUrl ? (
-              <img
-                src={site.logoUrl}
-                alt="شعار المتجر"
-                style={{ maxHeight: "74px", maxWidth: "130px", objectFit: "contain" }}
-              />
-            ) : (
-              <div
-                style={{
-                  width: "64px",
-                  height: "64px",
-                  borderRadius: "50%",
-                  background: ink,
-                  color: "#e8d29b",
-                  border: `2px solid ${gold}`,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  fontSize: "34px",
-                  fontWeight: "bold",
-                }}
-              >
-                ن
-              </div>
-            )}
+            <InvoiceLogo logoUrl={site.logoUrl} />
 
             <div>
               <div style={{ fontSize: "24px", fontWeight: "bold", color: ink }}>
@@ -857,14 +894,6 @@ function InvoiceSheet({ order, site, printedAt }) {
                   {formatPhoneDisplay(site.whatsapp)}
                 </span>
               </div>
-              {socials.map(([label, url]) => (
-                <div key={label} style={{ color: muted, fontSize: "12px" }}>
-                  {label}:{" "}
-                  <span dir="ltr" style={{ unicodeBidi: "embed" }}>
-                    {url.replace(/^https?:\/\//, "")}
-                  </span>
-                </div>
-              ))}
             </div>
           </div>
         </div>
@@ -906,7 +935,7 @@ function InvoiceSheet({ order, site, printedAt }) {
           </tbody>
         </table>
 
-        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "18px" }}>
+        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "18px", marginBottom: "30px" }}>
           <div
             style={{
               minWidth: "270px",
@@ -929,7 +958,7 @@ function InvoiceSheet({ order, site, printedAt }) {
 
         <div
           style={{
-            marginTop: "34px",
+            marginTop: "auto",
             paddingTop: "14px",
             borderTop: `1px dashed ${gold}`,
             textAlign: "center",
@@ -940,6 +969,12 @@ function InvoiceSheet({ order, site, printedAt }) {
         >
           <div style={{ color: ink, fontSize: "15px", fontWeight: "bold" }}>
             شكرًا لتسوقكم من {site.storeName}
+          </div>
+          <div style={{ color: ink, fontSize: "14px", fontWeight: "bold", margin: "4px 0" }}>
+            للتواصل والاستفسار:{" "}
+            <span dir="ltr" style={{ unicodeBidi: "embed" }}>
+              {formatPhoneDisplay(site.whatsapp)}
+            </span>
           </div>
           <div>الأسعار بالريال السعودي • نسعد بخدمتكم دائمًا</div>
           <div style={{ fontSize: "10px", marginTop: "6px" }}>
@@ -1091,13 +1126,7 @@ function ReportSheet({ report, modeLabel, site, printedAt }) {
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-            {site.logoUrl && (
-              <img
-                src={site.logoUrl}
-                alt="شعار المتجر"
-                style={{ maxHeight: "56px", maxWidth: "110px", objectFit: "contain" }}
-              />
-            )}
+            <InvoiceLogo logoUrl={site.logoUrl} size={52} />
             <div style={{ fontSize: "22px", fontWeight: "bold" }}>{site.storeName}</div>
           </div>
 
@@ -1217,12 +1246,18 @@ function getUnitStock(product, sizeLabel) {
   return Number(product.stock ?? 10);
 }
 
+// صفحة الإدارة منفصلة: /admin أو /#/admin ولا يوجد أي رابط لها في المتجر
+function getIsAdminRoute() {
+  const path = window.location.pathname.replace(/\/+$/, "");
+  return path === "/admin" || window.location.hash.startsWith("#/admin");
+}
+
 function App() {
+  const [isAdminRoute, setIsAdminRoute] = useState(getIsAdminRoute);
   const [products, setProducts] = useState([]);
   const [productsLoading, setProductsLoading] = useState(true);
 
   const [isAdmin, setIsAdmin] = useState(false);
-  const [adminMode, setAdminMode] = useState(false);
   const [adminEmail, setAdminEmail] = useState("");
   const [adminPassword, setAdminPassword] = useState("");
   const [authLoading, setAuthLoading] = useState(true);
@@ -1361,6 +1396,39 @@ function App() {
     });
   }, [products, productsLoading]);
 
+  // متابعة تغيّر العنوان (الانتقال بين المتجر وصفحة الإدارة)
+  useEffect(() => {
+    function updateRoute() {
+      setIsAdminRoute(getIsAdminRoute());
+    }
+
+    window.addEventListener("hashchange", updateRoute);
+    window.addEventListener("popstate", updateRoute);
+
+    return () => {
+      window.removeEventListener("hashchange", updateRoute);
+      window.removeEventListener("popstate", updateRoute);
+    };
+  }, []);
+
+  // صفحة الإدارة لا تُفهرس في محركات البحث
+  useEffect(() => {
+    if (!isAdminRoute) return undefined;
+
+    const previousTitle = document.title;
+    const meta = document.createElement("meta");
+
+    document.title = "لوحة الإدارة";
+    meta.name = "robots";
+    meta.content = "noindex, nofollow";
+    document.head.appendChild(meta);
+
+    return () => {
+      document.title = previousTitle;
+      meta.remove();
+    };
+  }, [isAdminRoute]);
+
   // التحقق من حساب المدير عند تحميل التطبيق
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
@@ -1471,7 +1539,7 @@ function App() {
 
   // جلب الطلبات (للمدير فقط)
   useEffect(() => {
-    if (!isAdmin) {
+    if (!isAdmin || !isAdminRoute) {
       setOrders([]);
       return undefined;
     }
@@ -1504,7 +1572,7 @@ function App() {
     );
 
     return () => unsubscribe();
-  }, [isAdmin]);
+  }, [isAdmin, isAdminRoute]);
 
   // البحث والتصنيف
   const filteredProducts = products.filter((product) => {
@@ -1754,7 +1822,6 @@ function App() {
       }
 
       setIsAdmin(true);
-      setAdminMode(true);
       setAdminPassword("");
 
       showToast("تم تسجيل الدخول بنجاح.");
@@ -1779,7 +1846,6 @@ function App() {
       await signOut(auth);
 
       setIsAdmin(false);
-      setAdminMode(false);
       setAdminEmail("");
       setAdminPassword("");
       clearProductForm();
@@ -2523,7 +2589,7 @@ function App() {
     (order) => !order.invoiceNumber && order.status !== "ملغي"
   );
 
-  const isReportsTab = adminMode && isAdmin && adminTab === "reports";
+  const isReportsTab = isAdminRoute && isAdmin && adminTab === "reports";
 
   const report = isReportsTab
     ? buildSalesReport(orders, reportMonth, reportMode)
@@ -2563,8 +2629,10 @@ function App() {
       ? orders
       : orders.filter((order) => order.status === ordersFilter);
 
-  return (
-    <div className="store" dir="rtl">
+  const storeHref =
+    window.location.pathname.replace(/\/+$/, "") === "/admin" ? "/" : "#";
+
+  const toastLayer = (
       <div
         aria-live="polite"
         style={{
@@ -2615,40 +2683,9 @@ function App() {
           </div>
         ))}
       </div>
+  );
 
-      {site.announcement && (
-        <div className="announcement">{site.announcement}</div>
-      )}
-
-      <header className="header">
-        <a className="brand" href="#home">
-          <BrandMark logoUrl={site.logoUrl} />
-          <span>
-            <strong>{site.storeName}</strong>
-            <small>{site.storeNameEn}</small>
-          </span>
-        </a>
-
-        <nav className="navigation">
-          <a href="#home">الرئيسية</a>
-          <a href="#products">العطور</a>
-          <a href="#about">عن النابع</a>
-        </nav>
-
-        <a className="cart-button" href="#cart">
-          🛍️ السلة ({cart.reduce((sum, item) => sum + item.quantity, 0)})
-        </a>
-
-        <button
-          type="button"
-          className="admin-button"
-          onClick={() => setAdminMode((current) => !current)}
-        >
-          {adminMode ? "إغلاق الإدارة" : "⚙️ إدارة المتجر"}
-        </button>
-      </header>
-
-      {adminMode && !isAdmin && (
+  const adminLoginSection = (
         <section className="admin-panel">
           <h2>تسجيل دخول المدير</h2>
 
@@ -2688,10 +2725,9 @@ function App() {
             </form>
           )}
         </section>
-      )}
+  );
 
-      <main>
-        {adminMode && isAdmin && (
+  const adminSection = (
           <section
             style={{
               padding: "35px 7%",
@@ -4028,7 +4064,101 @@ function App() {
               </div>
             )}
           </section>
-        )}
+  );
+
+  const printLayers = (
+    <>
+      {invoiceOrder && (
+        <PrintPortal
+          title={
+            invoiceOrder.invoiceNumber
+              ? `فاتورة ${invoiceOrder.invoiceNumber}`
+              : "جارٍ إصدار الفاتورة..."
+          }
+          onClose={() => setInvoiceOrderId(null)}
+        >
+          {invoiceOrder.invoiceNumber ? (
+            <InvoiceSheet order={invoiceOrder} site={site} printedAt={new Date()} />
+          ) : (
+            <p style={{ color: "#fff" }}>جارٍ إصدار الفاتورة...</p>
+          )}
+        </PrintPortal>
+      )}
+
+      {reportPrintOpen && report && (
+        <PrintPortal
+          title={`تقرير مبيعات ${monthLabel(report.monthKey)}`}
+          onClose={() => setReportPrintOpen(false)}
+        >
+          <ReportSheet
+            report={report}
+            modeLabel={modeLabel}
+            site={site}
+            printedAt={new Date()}
+          />
+        </PrintPortal>
+      )}
+    </>
+  );
+
+  // ===== صفحة الإدارة (منفصلة عن المتجر) =====
+  if (isAdminRoute) {
+    return (
+      <div className="store" dir="rtl">
+        {toastLayer}
+
+        <header className="header">
+          <a className="brand" href={storeHref}>
+            <BrandMark logoUrl={site.logoUrl} />
+            <span>
+              <strong>{site.storeName}</strong>
+              <small>لوحة الإدارة</small>
+            </span>
+          </a>
+
+          <a className="cart-button" href={storeHref}>
+            ← العودة إلى المتجر
+          </a>
+        </header>
+
+        <main>{isAdmin ? adminSection : adminLoginSection}</main>
+
+        {printLayers}
+      </div>
+    );
+  }
+
+  // ===== المتجر (للعملاء) =====
+  return (
+    <div className="store" dir="rtl">
+      {toastLayer}
+
+      {site.announcement && (
+        <div className="announcement">{site.announcement}</div>
+      )}
+
+      <header className="header">
+        <a className="brand" href="#home">
+          <BrandMark logoUrl={site.logoUrl} />
+          <span>
+            <strong>{site.storeName}</strong>
+            <small>{site.storeNameEn}</small>
+          </span>
+        </a>
+
+        <nav className="navigation">
+          <a href="#home">الرئيسية</a>
+          <a href="#products">العطور</a>
+          <a href="#about">عن النابع</a>
+        </nav>
+
+        <a className="cart-button" href="#cart">
+          🛍️ السلة ({cart.reduce((sum, item) => sum + item.quantity, 0)})
+        </a>
+
+      </header>
+
+      <main>
 
         <BannerSlider banners={activeBanners} />
 
@@ -4140,20 +4270,7 @@ function App() {
                 <article
                   className="product-card"
                   key={product.id}
-                  role="button"
-                  tabIndex={0}
-                  aria-label={`عرض تفاصيل ${product.name || "العطر"}`}
-                  onClick={() => openProductDetails(product)}
-                  onKeyDown={(event) => {
-                    if (
-                      event.target === event.currentTarget &&
-                      (event.key === "Enter" || event.key === " ")
-                    ) {
-                      event.preventDefault();
-                      openProductDetails(product);
-                    }
-                  }}
-                  style={{ cursor: "pointer" }}
+                  style={{ display: "flex", flexDirection: "column", height: "100%" }}
                 >
                   <div className="product-image" style={{ position: "relative" }}>
                     <span className="product-tag">اختيار النابع</span>
@@ -4185,7 +4302,6 @@ function App() {
                         height: "220px",
                         objectFit: "contain",
                         display: "block",
-                        cursor: "pointer",
                       }}
                       onError={(event) => {
                         event.currentTarget.onerror = null;
@@ -4196,32 +4312,77 @@ function App() {
                     <span className="image-caption">AL NABEA</span>
                   </div>
 
-                  <div className="product-info">
+                  <div
+                    className="product-info"
+                    style={{ display: "flex", flexDirection: "column", flex: 1 }}
+                  >
                     <span className="product-category">{product.category}</span>
 
-                    <h3>{product.name}</h3>
+                    <h3
+                      style={{
+                        lineHeight: 1.45,
+                        minHeight: "2.9em",
+                        margin: "6px 0",
+                        display: "-webkit-box",
+                        WebkitLineClamp: 2,
+                        WebkitBoxOrient: "vertical",
+                        overflow: "hidden",
+                      }}
+                    >
+                      {product.name}
+                    </h3>
 
-                    <p>{product.description}</p>
-
-                    <div className="product-footer">
-                      <strong style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: "7px" }}>
-                        {productHasSizes(product) && <small>ابتداءً من </small>}
-                        {Number(product.discountPercent) > 0 && (
-                          <del style={{ color: "#aaa59a", fontSize: "14px", fontWeight: "normal" }}>
-                            {formatPrice(product.price)} ر.س
-                          </del>
+                    <div style={{ minHeight: "58px", margin: "4px 0 14px" }}>
+                      <div style={{ minHeight: "22px", fontSize: "14px", color: "#aaa59a" }}>
+                        {Number(product.discountPercent) > 0 ? (
+                          <del>{formatPrice(product.price)} ر.س</del>
+                        ) : (
+                          "\u00a0"
                         )}
-                        <span style={{ color: Number(product.discountPercent) > 0 ? "#e8d29b" : "inherit" }}>
+                      </div>
+
+                      <strong>
+                        {productHasSizes(product) && <small>ابتداءً من </small>}
+                        <span
+                          style={{
+                            color:
+                              Number(product.discountPercent) > 0
+                                ? "#e8d29b"
+                                : "inherit",
+                          }}
+                        >
                           {formatPrice(getUnitPrice(product, ""))} <small>ر.س</small>
                         </span>
                       </strong>
+                    </div>
+
+                    <div
+                      style={{
+                        marginTop: "auto",
+                        display: "grid",
+                        gridTemplateColumns: "1fr 1fr",
+                        gap: "8px",
+                      }}
+                    >
+                      <button
+                        type="button"
+                        className="add-button"
+                        onClick={() => openProductDetails(product)}
+                        style={{
+                          background: "transparent",
+                          border: "1px solid #c9a45c",
+                          color: "#e8d29b",
+                          width: "100%",
+                        }}
+                      >
+                        التفاصيل
+                      </button>
 
                       <button
                         type="button"
                         className="add-button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-
+                        style={{ width: "100%" }}
+                        onClick={() => {
                           if (productHasSizes(product)) {
                             openProductDetails(product);
                           } else {
@@ -4237,8 +4398,6 @@ function App() {
                             : "+ أضف للسلة"}
                       </button>
                     </div>
-
-                    <small>المتوفر: {product.stock ?? 10} قطعة</small>
                   </div>
                 </article>
               ))}
@@ -4540,37 +4699,6 @@ function App() {
             </div>
           </div>
         </div>
-      )}
-
-      {invoiceOrder && (
-        <PrintPortal
-          title={
-            invoiceOrder.invoiceNumber
-              ? `فاتورة ${invoiceOrder.invoiceNumber}`
-              : "جارٍ إصدار الفاتورة..."
-          }
-          onClose={() => setInvoiceOrderId(null)}
-        >
-          {invoiceOrder.invoiceNumber ? (
-            <InvoiceSheet order={invoiceOrder} site={site} printedAt={new Date()} />
-          ) : (
-            <p style={{ color: "#fff" }}>جارٍ إصدار الفاتورة...</p>
-          )}
-        </PrintPortal>
-      )}
-
-      {reportPrintOpen && report && (
-        <PrintPortal
-          title={`تقرير مبيعات ${monthLabel(report.monthKey)}`}
-          onClose={() => setReportPrintOpen(false)}
-        >
-          <ReportSheet
-            report={report}
-            modeLabel={modeLabel}
-            site={site}
-            printedAt={new Date()}
-          />
-        </PrintPortal>
       )}
 
       <footer className="footer">
