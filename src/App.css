@@ -950,3 +950,440 @@ h5,
 h6 {
 color: var(--gold-light);
 }
+/* =========================================
+   تصميم متجر النابع للعطور لجميع الشاشات
+   Responsive Design - Al Nabea Perfumes
+========================================= */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: 20px;
+  max-width: 100%;
+}
+
+body {
+  margin: 0;
+  width: 100%;
+  min-width: 320px;
+  overflow-x: hidden;
+}
+
+.store {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: clip;
+}
+
+.store img {
+  max-width: 100%;
+}
+
+.store button,
+.store input,
+.store select,
+.store textarea {
+  font: inherit;
+  max-width: 100%;
+}
+
+.store button {
+  min-height: 42px;
+  cursor: pointer;
+}
+
+.store input,
+.store select,
+.store textarea {
+  min-width: 0;
+}
+
+/* الهيدر - الكمبيوتر */
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  width: 100%;
+  max-width: 100%;
+}
+
+.brand {
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+.navigation {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 18px;
+}
+
+.navigation a {
+  white-space: nowrap;
+}
+
+.cart-button,
+.admin-button {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+/* شبكة المنتجات */
+
+.product-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 22px;
+  width: 100%;
+}
+
+.product-card {
+  min-width: 0;
+  width: 100%;
+  overflow: hidden;
+}
+
+.product-image {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+}
+
+.product-image img,
+.product-photo {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  object-fit: contain;
+}
+
+.product-info {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.product-info h3,
+.product-info p {
+  overflow-wrap: anywhere;
+}
+
+.product-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.product-footer > * {
+  min-width: 0;
+}
+
+.add-button {
+  max-width: 100%;
+  white-space: normal;
+}
+
+/* البحث والتصنيفات */
+
+.search-box {
+  width: 100%;
+  max-width: 600px;
+  margin-inline: auto;
+}
+
+.search-box input {
+  width: 100%;
+  min-width: 0;
+}
+
+.category-list {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+}
+
+.category {
+  max-width: 100%;
+  white-space: normal;
+}
+
+/* السلة */
+
+.cart-section,
+.cart-items,
+.cart-item {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.cart-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.cart-item > * {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.quantity-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.checkout-button {
+  width: 100%;
+  max-width: 100%;
+}
+
+/* الصور والعروض */
+
+.store .banner img,
+.store .hero img {
+  max-width: 100%;
+  height: auto;
+}
+
+.store .hero {
+  max-width: 100%;
+}
+
+/* الشاشات المتوسطة - الأجهزة اللوحية واللابتوب الصغير */
+
+@media (max-width: 1024px) {
+  .product-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 18px;
+  }
+
+  .header {
+    justify-content: center;
+  }
+
+  .navigation {
+    gap: 14px;
+  }
+}
+
+/* الجوال */
+
+@media (max-width: 768px) {
+  .announcement {
+    padding: 10px 12px;
+    text-align: center;
+    font-size: 13px;
+    line-height: 1.8;
+    overflow-wrap: anywhere;
+  }
+
+  .header {
+    padding: 14px 12px;
+    gap: 12px;
+  }
+
+  .brand {
+    flex-basis: 100%;
+    justify-content: center;
+    text-align: center;
+  }
+
+  .navigation {
+    flex-basis: 100%;
+    width: 100%;
+    gap: 10px 16px;
+    justify-content: center;
+  }
+
+  .navigation a {
+    font-size: 14px;
+  }
+
+  .cart-button,
+  .admin-button {
+    flex: 1 1 auto;
+    text-align: center;
+    justify-content: center;
+    padding: 10px 12px;
+    font-size: 13px;
+  }
+
+  .product-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .product-card {
+    border-radius: 8px;
+  }
+
+  .product-info {
+    padding: 12px;
+  }
+
+  .product-info h3 {
+    font-size: 16px;
+    line-height: 1.7;
+  }
+
+  .product-info p {
+    font-size: 13px;
+    line-height: 1.8;
+  }
+
+  .product-image img,
+  .product-photo {
+    height: 180px !important;
+  }
+
+  .product-footer {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .product-footer > strong {
+    font-size: 17px;
+  }
+
+  .add-button {
+    width: 100%;
+    padding: 10px 8px;
+    font-size: 13px;
+  }
+
+  .products-section,
+  .cart-section,
+  .about-section {
+    padding-inline: 14px;
+  }
+
+  .section-heading h2 {
+    font-size: clamp(23px, 6vw, 32px);
+    line-height: 1.6;
+  }
+
+  .section-heading p {
+    font-size: 14px;
+    line-height: 1.9;
+  }
+
+  .category-list {
+    justify-content: flex-start;
+    gap: 8px;
+  }
+
+  .category {
+    padding: 8px 12px;
+    font-size: 13px;
+  }
+
+  .cart-item {
+    align-items: stretch;
+    flex-direction: column;
+    padding: 14px 0;
+  }
+
+  .quantity-controls {
+    justify-content: center;
+  }
+
+  .cart-total {
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .admin-panel {
+    margin: 12px;
+    padding: 16px;
+    max-width: calc(100% - 24px);
+  }
+
+  .footer {
+    padding: 24px 14px;
+    text-align: center;
+    overflow-wrap: anywhere;
+  }
+}
+
+/* الجوالات الصغيرة */
+
+@media (max-width: 380px) {
+  .product-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .product-info {
+    padding: 9px;
+  }
+
+  .product-info h3 {
+    font-size: 14px;
+  }
+
+  .product-info p {
+    font-size: 12px;
+  }
+
+  .product-image img,
+  .product-photo {
+    height: 145px !important;
+  }
+
+  .add-button {
+    font-size: 12px;
+    padding-inline: 5px;
+  }
+
+  .navigation {
+    gap: 8px 12px;
+  }
+
+  .navigation a {
+    font-size: 13px;
+  }
+}
+
+/* الكمبيوتر والشاشات العريضة */
+
+@media (min-width: 1200px) {
+  .product-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 24px;
+  }
+}
+
+/* تقليل الحركة لمن يفضل ذلك */
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

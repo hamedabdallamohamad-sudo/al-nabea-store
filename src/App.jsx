@@ -319,11 +319,20 @@ function getSizeOption(product, label) {
   return (product?.sizes || []).find((option) => option.label === label);
 }
 
-function getUnitPrice(product, sizeLabel) {
+function getOriginalUnitPrice(product, sizeLabel) {
   if (productHasSizes(product)) {
     return Number(getSizeOption(product, sizeLabel)?.price ?? product.price);
   }
   return Number(product.price);
+}
+
+function getUnitPrice(product, sizeLabel) {
+  const originalPrice = getOriginalUnitPrice(product, sizeLabel);
+  const discountPercent = Math.min(
+    100,
+    Math.max(0, Number(product.discountPercent) || 0)
+  );
+  return Math.round(originalPrice * (1 - discountPercent / 100) * 100) / 100;
 }
 
 function getUnitStock(product, sizeLabel) {
@@ -345,6 +354,7 @@ function App() {
 
   const [productName, setProductName] = useState("");
   const [productPrice, setProductPrice] = useState("");
+  const [productDiscount, setProductDiscount] = useState("0");
   const [productCategory, setProductCategory] = useState("عطور رجالية");
   const [productDescription, setProductDescription] = useState("");
   const [productStock, setProductStock] = useState("10");
@@ -833,7 +843,18 @@ function App() {
 
     let price = Number(productPrice);
     let stock = Number(productStock);
+    const discountPercent = Number(productDiscount);
     const sizesData = [];
+
+    if (
+      productDiscount.trim() === "" ||
+      !Number.isFinite(discountPercent) ||
+      discountPercent < 0 ||
+      discountPercent > 100
+    ) {
+      alert("يرجى إدخال نسبة خصم من 0 إلى 100.");
+      return;
+    }
 
     if (productSizes.length > 0) {
       const seen = new Set();
@@ -921,6 +942,7 @@ function App() {
       const productData = {
         name: productName.trim(),
         price,
+        discountPercent,
         category: productCategory,
         description: productDescription.trim(),
         stock,
@@ -960,6 +982,7 @@ function App() {
     setEditingId(product.id);
     setProductName(product.name || "");
     setProductPrice(String(product.price ?? ""));
+    setProductDiscount(String(product.discountPercent ?? 0));
     setProductCategory(product.category || "عطور رجالية");
     setProductDescription(product.description || "");
     setProductStock(String(product.stock ?? 10));
@@ -1008,6 +1031,7 @@ function App() {
   function clearProductForm() {
     setProductName("");
     setProductPrice("");
+    setProductDiscount("0");
     setProductCategory("عطور رجالية");
     setProductDescription("");
     setProductStock("10");
@@ -1626,6 +1650,23 @@ function App() {
               )}
 
               <label>
+                نسبة الخصم (%)
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="1"
+                  value={productDiscount}
+                  onChange={(event) => setProductDiscount(event.target.value)}
+                  placeholder="0 يعني بدون خصم"
+                  style={adminInputStyle}
+                />
+                <small style={{ display: "block", color: "#aaa59a", marginTop: "5px" }}>
+                  اكتب 10 لخصم 10٪، أو اتركها 0 بدون عرض. يطبق الخصم على جميع الأحجام.
+                </small>
+              </label>
+
+              <label>
                 التصنيف
                 <select
                   value={productCategory}
@@ -1842,7 +1883,10 @@ function App() {
                     <strong style={{ color: "#e8d29b" }}>{product.name}</strong>
 
                     <p style={{ color: "#c9a45c", margin: "5px 0" }}>
-                      السعر: {product.price} ر.س
+                      السعر الأساسي: {formatPrice(product.price)} ر.س
+                      {Number(product.discountPercent) > 0 && (
+                        <> — الخصم: {formatPrice(product.discountPercent)}٪ — السعر بعد الخصم: {formatPrice(getUnitPrice(product, ""))} ر.س</>
+                      )}
                     </p>
 
                     <p style={{ color: "#aaa59a", margin: "5px 0" }}>
@@ -2580,8 +2624,26 @@ function App() {
                   }}
                   style={{ cursor: "pointer" }}
                 >
-                  <div className="product-image">
+                  <div className="product-image" style={{ position: "relative" }}>
                     <span className="product-tag">اختيار النابع</span>
+                    {Number(product.discountPercent) > 0 && (
+                      <span
+                        style={{
+                          position: "absolute",
+                          top: "12px",
+                          left: "12px",
+                          zIndex: 2,
+                          background: "#a52a2a",
+                          color: "#fff",
+                          padding: "6px 10px",
+                          borderRadius: "4px",
+                          fontWeight: "bold",
+                          fontSize: "13px",
+                        }}
+                      >
+                        خصم {formatPrice(product.discountPercent)}٪
+                      </span>
+                    )}
 
                     <img
                       src={product.image || "/images/nabea-royal.jpg"}
@@ -2611,9 +2673,16 @@ function App() {
                     <p>{product.description}</p>
 
                     <div className="product-footer">
-                      <strong>
+                      <strong style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: "7px" }}>
                         {productHasSizes(product) && <small>ابتداءً من </small>}
-                        {formatPrice(product.price)} <small>ر.س</small>
+                        {Number(product.discountPercent) > 0 && (
+                          <del style={{ color: "#aaa59a", fontSize: "14px", fontWeight: "normal" }}>
+                            {formatPrice(product.price)} ر.س
+                          </del>
+                        )}
+                        <span style={{ color: Number(product.discountPercent) > 0 ? "#e8d29b" : "inherit" }}>
+                          {formatPrice(getUnitPrice(product, ""))} <small>ر.س</small>
+                        </span>
                       </strong>
 
                       <button
@@ -2672,7 +2741,7 @@ function App() {
                         {item.name}
                         {item.size ? ` — ${item.size}` : ""}
                       </strong>
-                      <p>{item.price} ريال للقطعة</p>
+                      <p>{formatPrice(item.price)} ريال للقطعة</p>
                     </div>
 
                     <div className="quantity-controls">
@@ -2899,12 +2968,21 @@ function App() {
                 </>
               )}
 
+              {selectedProduct && Number(selectedProduct.discountPercent) > 0 && (
+                <p style={{ margin: "18px 0 0", color: "#aaa59a" }}>
+                  قبل الخصم: <del>{formatPrice(getOriginalUnitPrice(selectedProduct, selectedSize))} ر.س</del>
+                  <span style={{ color: "#e8d29b", marginRight: "10px", fontWeight: "bold" }}>
+                    خصم {formatPrice(selectedProduct.discountPercent)}٪
+                  </span>
+                </p>
+              )}
+
               <p
                 style={{
                   color: "#e8d29b",
                   fontSize: "28px",
                   fontWeight: "bold",
-                  margin: "20px 0 4px",
+                  margin: "8px 0 4px",
                 }}
               >
                 {formatPrice(detailPrice)} <small>ر.س</small>
