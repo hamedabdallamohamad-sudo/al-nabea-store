@@ -14,6 +14,7 @@ import {
   serverTimestamp,
   increment,
   writeBatch,
+  runTransaction,
 } from "firebase/firestore";
 
 import {
@@ -21,6 +22,8 @@ import {
   signOut,
   onAuthStateChanged,
 } from "firebase/auth";
+
+import { createPortal } from "react-dom";
 
 import "./App.css";
 
@@ -113,6 +116,41 @@ function generateOrderNumber() {
   const time = Date.now().toString(36).toUpperCase().slice(-5);
   const random = Math.random().toString(36).toUpperCase().slice(2, 5);
   return `NB-${time}${random}`;
+}
+
+const CART_STORAGE_KEY = "nabea_cart_v1";
+
+// قراءة السلة المحفوظة في المتصفح مع التحقق من سلامة بياناتها
+function loadSavedCart() {
+  try {
+    const saved = JSON.parse(
+      window.localStorage.getItem(CART_STORAGE_KEY) || "[]"
+    );
+
+    if (!Array.isArray(saved)) return [];
+
+    return saved
+      .filter(
+        (item) =>
+          item &&
+          typeof item.key === "string" &&
+          typeof item.id === "string" &&
+          Number.isFinite(Number(item.price)) &&
+          Number.isInteger(item.quantity) &&
+          item.quantity > 0
+      )
+      .map((item) => ({
+        key: item.key,
+        id: item.id,
+        name: String(item.name || ""),
+        size: String(item.size || ""),
+        price: Number(item.price),
+        stock: Number(item.stock ?? 10),
+        quantity: item.quantity,
+      }));
+  } catch {
+    return [];
+  }
 }
 
 const DEFAULT_SITE = {
@@ -311,6 +349,843 @@ function BannerSlider({ banners }) {
   );
 }
 
+const ARABIC_DATE_LOCALE = "ar-SA-u-ca-gregory-nu-latn";
+
+const ARABIC_MONTHS = [
+  "يناير",
+  "فبراير",
+  "مارس",
+  "أبريل",
+  "مايو",
+  "يونيو",
+  "يوليو",
+  "أغسطس",
+  "سبتمبر",
+  "أكتوبر",
+  "نوفمبر",
+  "ديسمبر",
+];
+
+const SALE_MODES = [
+  ["confirmed", "المبيعات المؤكدة (قيد التجهيز وما بعدها)"],
+  ["completed", "المكتملة فقط"],
+  ["all", "كل الطلبات عدا الملغية"],
+];
+
+function toDateSafe(value) {
+  if (!value) return null;
+  if (typeof value.toDate === "function") return value.toDate();
+  if (value instanceof Date) return value;
+  return null;
+}
+
+function formatLongDate(date) {
+  if (!date) return "—";
+  return date.toLocaleDateString(ARABIC_DATE_LOCALE, {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+}
+
+function formatDateTime(date) {
+  if (!date) return "—";
+  return date.toLocaleString(ARABIC_DATE_LOCALE, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatMoney(value) {
+  return (Number(value) || 0).toLocaleString("en-US", {
+    maximumFractionDigits: 2,
+  });
+}
+
+function formatPhoneDisplay(value) {
+  const digits = String(value || "").replace(/\D/g, "");
+
+  if (digits.length === 12 && digits.startsWith("9665")) {
+    return `+966 ${digits.slice(3, 5)} ${digits.slice(5, 8)} ${digits.slice(8)}`;
+  }
+
+  return digits ? `+${digits}` : "";
+}
+
+function monthLabel(monthKey) {
+  const [year, month] = String(monthKey || "").split("-");
+  const name = ARABIC_MONTHS[Number(month) - 1];
+  return name ? `${name} ${year}` : String(monthKey || "");
+}
+
+function currentMonthKey() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+}
+
+// هل يُحتسب الطلب ضمن المبيعات حسب الوضع المختار؟
+function isSaleOrder(order, mode) {
+  if (mode === "completed") return order.status === "مكتمل";
+  if (mode === "all") return order.status !== "ملغي";
+  return STOCK_DEDUCT_STATUSES.includes(order.status);
+}
+
+// مؤشرات اليوم والشهر الحالي
+function computeOverview(orders, mode) {
+  const now = new Date();
+  const result = { today: 0, todayCount: 0, month: 0, monthCount: 0 };
+
+  for (const order of orders) {
+    const date = toDateSafe(order.createdAt);
+
+    if (!date || !isSaleOrder(order, mode)) continue;
+
+    const amount = Number(order.total) || 0;
+
+    if (
+      date.getFullYear() === now.getFullYear() &&
+      date.getMonth() === now.getMonth()
+    ) {
+      result.month += amount;
+      result.monthCount += 1;
+
+      if (date.getDate() === now.getDate()) {
+        result.today += amount;
+        result.todayCount += 1;
+      }
+    }
+  }
+
+  return result;
+}
+
+// بناء تقرير المبيعات لشهر محدد (monthKey بصيغة YYYY-MM)
+function buildSalesReport(orders, monthKey, mode) {
+  const [yearText, monthText] = String(monthKey || "").split("-");
+  const now = new Date();
+  const year = Number(yearText) || now.getFullYear();
+  const month = (Number(monthText) || now.getMonth() + 1) - 1;
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+  const daily = Array.from({ length: daysInMonth }, (_, index) => ({
+    day: index + 1,
+    total: 0,
+    count: 0,
+  }));
+
+  const productsMap = new Map();
+  const paymentsMap = new Map();
+  const statusMap = new Map();
+  const yearTotals = Array(12).fill(0);
+  const monthOrders = [];
+
+  const prevYear = month === 0 ? year - 1 : year;
+  const prevMonth = month === 0 ? 11 : month - 1;
+
+  let total = 0;
+  let count = 0;
+  let itemsSold = 0;
+  let prevTotal = 0;
+
+  for (const order of orders) {
+    const date = toDateSafe(order.createdAt);
+
+    if (!date) continue;
+
+    const amount = Number(order.total) || 0;
+    const sale = isSaleOrder(order, mode);
+
+    if (sale && date.getFullYear() === year) {
+      yearTotals[date.getMonth()] += amount;
+    }
+
+    if (
+      sale &&
+      date.getFullYear() === prevYear &&
+      date.getMonth() === prevMonth
+    ) {
+      prevTotal += amount;
+    }
+
+    if (date.getFullYear() !== year || date.getMonth() !== month) continue;
+
+    monthOrders.push(order);
+    statusMap.set(order.status, (statusMap.get(order.status) || 0) + 1);
+
+    if (!sale) continue;
+
+    total += amount;
+    count += 1;
+
+    const bucket = daily[date.getDate() - 1];
+    bucket.total += amount;
+    bucket.count += 1;
+
+    const payment = order.paymentMethod || "غير محدد";
+    const paymentEntry = paymentsMap.get(payment) || { total: 0, count: 0 };
+    paymentEntry.total += amount;
+    paymentEntry.count += 1;
+    paymentsMap.set(payment, paymentEntry);
+
+    for (const item of order.items || []) {
+      const quantity = Number(item.quantity) || 0;
+      const revenue = (Number(item.price) || 0) * quantity;
+      const label = `${item.name || "منتج"}${item.size ? ` (${item.size})` : ""}`;
+      const entry = productsMap.get(label) || { label, quantity: 0, revenue: 0 };
+
+      entry.quantity += quantity;
+      entry.revenue += revenue;
+      productsMap.set(label, entry);
+      itemsSold += quantity;
+    }
+  }
+
+  const round = (value) => Math.round(value * 100) / 100;
+
+  return {
+    year,
+    month,
+    monthKey,
+    daily: daily.map((day) => ({ ...day, total: round(day.total) })),
+    yearTotals: yearTotals.map(round),
+    total: round(total),
+    count,
+    average: count > 0 ? round(total / count) : 0,
+    itemsSold,
+    prevTotal: round(prevTotal),
+    change: prevTotal > 0 ? ((total - prevTotal) / prevTotal) * 100 : null,
+    products: [...productsMap.values()]
+      .map((entry) => ({ ...entry, revenue: round(entry.revenue) }))
+      .sort((a, b) => b.revenue - a.revenue),
+    payments: [...paymentsMap.entries()]
+      .map(([method, entry]) => ({ method, ...entry, total: round(entry.total) }))
+      .sort((a, b) => b.total - a.total),
+    statuses: ORDER_STATUSES.map((status) => ({
+      status,
+      count: statusMap.get(status) || 0,
+    })).filter((entry) => entry.count > 0),
+    monthOrders,
+  };
+}
+
+// تصدير طلبات الشهر إلى ملف CSV يفتح في Excel
+function exportOrdersCsv(orders, monthKey) {
+  const header = [
+    "رقم الطلب",
+    "رقم الفاتورة",
+    "التاريخ",
+    "الحالة",
+    "العميل",
+    "الجوال",
+    "العنوان",
+    "طريقة الدفع",
+    "الأصناف",
+    "الإجمالي (ر.س)",
+  ];
+
+  const safe = (value) => {
+    let text = String(value ?? "");
+    // منع تنفيذ المعادلات عند فتح الملف في Excel
+    if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+    return `"${text.replace(/"/g, '""')}"`;
+  };
+
+  const rows = orders.map((order) => [
+    order.orderNumber,
+    order.invoiceNumber || "",
+    formatDateTime(toDateSafe(order.createdAt)),
+    order.status,
+    order.customerName,
+    order.customerPhone,
+    order.customerAddress,
+    order.paymentMethod,
+    (order.items || [])
+      .map(
+        (item) =>
+          `${item.name}${item.size ? ` (${item.size})` : ""} × ${item.quantity}`
+      )
+      .join(" | "),
+    Number(order.total) || 0,
+  ]);
+
+  const csv =
+    "\uFEFF" +
+    [header, ...rows].map((row) => row.map(safe).join(",")).join("\r\n");
+
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+
+  link.href = url;
+  link.download = `orders-${monthKey}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+const PRINT_CSS = `
+.print-portal { position: fixed; inset: 0; z-index: 3000; background: rgba(0,0,0,0.82); overflow: auto; overscroll-behavior: contain; }
+.print-toolbar { position: sticky; top: 0; z-index: 2; display: flex; gap: 10px; justify-content: center; align-items: center; flex-wrap: wrap; padding: 12px; background: #1b1a15; border-bottom: 1px solid #c9a45c; color: #e8d29b; }
+.print-toolbar button { padding: 10px 22px; border: 1px solid #c9a45c; background: #c9a45c; color: #10100e; cursor: pointer; font-weight: bold; font-family: inherit; }
+.print-toolbar button.secondary { background: transparent; color: #e8d29b; }
+.print-stage { padding: 20px 10px 50px; display: flex; justify-content: center; overflow-x: auto; }
+.print-paper { width: 210mm; min-height: 297mm; flex: none; background: #fff; color: #1b1a15; box-sizing: border-box; box-shadow: 0 10px 40px rgba(0,0,0,0.5); -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+.print-paper tr { break-inside: avoid; }
+@media print {
+  @page { size: A4; margin: 0; }
+  html, body { background: #fff !important; }
+  body > *:not(.print-portal) { display: none !important; }
+  .print-portal { position: static !important; background: none !important; overflow: visible !important; }
+  .no-print { display: none !important; }
+  .print-stage { padding: 0 !important; display: block !important; overflow: visible !important; }
+  .print-paper { width: 100% !important; min-height: auto !important; box-shadow: none !important; }
+}
+`;
+
+function PrintPortal({ title, onClose, children }) {
+  useEffect(() => {
+    function handleKeyDown(event) {
+      if (event.key === "Escape") onClose();
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  return createPortal(
+    <div className="print-portal" dir="rtl">
+      <style>{PRINT_CSS}</style>
+
+      <div className="print-toolbar no-print">
+        <strong>{title}</strong>
+        <button type="button" onClick={() => window.print()}>
+          🖨️ طباعة
+        </button>
+        <button type="button" className="secondary" onClick={onClose}>
+          إغلاق
+        </button>
+      </div>
+
+      <div className="print-stage">{children}</div>
+    </div>,
+    document.body
+  );
+}
+
+function InvoiceSheet({ order, site, printedAt }) {
+  const issued = toDateSafe(order.invoiceDate) || printedAt;
+  const created = toDateSafe(order.createdAt);
+  const items = order.items || [];
+
+  const gold = "#b8924a";
+  const ink = "#1b1a15";
+  const muted = "#6b6559";
+  const line = "#e7dfcf";
+
+  const cell = {
+    padding: "10px 10px",
+    borderBottom: `1px solid ${line}`,
+    textAlign: "right",
+    fontSize: "13px",
+  };
+
+  const headCell = {
+    ...cell,
+    background: ink,
+    color: "#e8d29b",
+    fontWeight: "bold",
+    borderBottom: "none",
+  };
+
+  const metaLabel = { color: muted, fontSize: "11px", marginBottom: "3px" };
+  const metaValue = { color: ink, fontWeight: "bold", fontSize: "14px" };
+
+  const socials = [
+    ["إنستغرام", site.instagram],
+    ["تيك توك", site.tiktok],
+    ["سناب شات", site.snapchat],
+    ["X", site.twitter],
+  ].filter(([, url]) => isHttpUrl(url));
+
+  return (
+    <div className="print-paper" dir="rtl">
+      <div
+        style={{
+          height: "10px",
+          background: `linear-gradient(90deg, ${gold}, #e8d29b, ${gold})`,
+        }}
+      />
+
+      <div style={{ padding: "12mm 14mm 10mm" }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: "16px",
+            paddingBottom: "16px",
+            borderBottom: `2px solid ${ink}`,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
+            {site.logoUrl ? (
+              <img
+                src={site.logoUrl}
+                alt="شعار المتجر"
+                style={{ maxHeight: "74px", maxWidth: "130px", objectFit: "contain" }}
+              />
+            ) : (
+              <div
+                style={{
+                  width: "64px",
+                  height: "64px",
+                  borderRadius: "50%",
+                  background: ink,
+                  color: "#e8d29b",
+                  border: `2px solid ${gold}`,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: "34px",
+                  fontWeight: "bold",
+                }}
+              >
+                ن
+              </div>
+            )}
+
+            <div>
+              <div style={{ fontSize: "24px", fontWeight: "bold", color: ink }}>
+                {site.storeName}
+              </div>
+              <div
+                dir="ltr"
+                style={{ fontSize: "11px", letterSpacing: "2px", color: gold, textAlign: "right" }}
+              >
+                {site.storeNameEn}
+              </div>
+            </div>
+          </div>
+
+          <div style={{ textAlign: "left" }}>
+            <div style={{ fontSize: "34px", fontWeight: "bold", color: gold, lineHeight: 1 }}>
+              فاتورة
+            </div>
+            <div dir="ltr" style={{ fontSize: "12px", letterSpacing: "4px", color: muted }}>
+              INVOICE
+            </div>
+          </div>
+        </div>
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(3, 1fr)",
+            gap: "14px",
+            margin: "18px 0",
+            padding: "14px 16px",
+            background: "#faf6ec",
+            border: `1px solid ${line}`,
+          }}
+        >
+          <div>
+            <div style={metaLabel}>رقم الفاتورة</div>
+            <div dir="ltr" style={{ ...metaValue, textAlign: "right", color: gold }}>
+              {order.invoiceNumber}
+            </div>
+          </div>
+
+          <div>
+            <div style={metaLabel}>تاريخ الفاتورة</div>
+            <div style={metaValue}>{formatLongDate(issued)}</div>
+          </div>
+
+          <div>
+            <div style={metaLabel}>رقم الطلب</div>
+            <div dir="ltr" style={{ ...metaValue, textAlign: "right" }}>
+              {order.orderNumber}
+            </div>
+          </div>
+
+          <div>
+            <div style={metaLabel}>تاريخ الطلب</div>
+            <div style={metaValue}>{formatLongDate(created)}</div>
+          </div>
+
+          <div>
+            <div style={metaLabel}>طريقة الدفع</div>
+            <div style={metaValue}>{order.paymentMethod}</div>
+          </div>
+
+          <div>
+            <div style={metaLabel}>حالة الطلب</div>
+            <div style={metaValue}>{order.status}</div>
+          </div>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px" }}>
+          <div style={{ padding: "14px 16px", border: `1px solid ${line}` }}>
+            <div style={{ color: gold, fontWeight: "bold", marginBottom: "8px" }}>
+              بيانات العميل
+            </div>
+            <div style={{ fontSize: "14px", lineHeight: 1.9, color: ink }}>
+              <div>
+                <strong>{order.customerName}</strong>
+              </div>
+              <div dir="ltr" style={{ textAlign: "right" }}>
+                {formatPhoneDisplay(order.customerPhone)}
+              </div>
+              <div style={{ color: muted }}>{order.customerAddress}</div>
+            </div>
+          </div>
+
+          <div style={{ padding: "14px 16px", border: `1px solid ${line}` }}>
+            <div style={{ color: gold, fontWeight: "bold", marginBottom: "8px" }}>
+              بيانات التواصل
+            </div>
+            <div style={{ fontSize: "14px", lineHeight: 1.9, color: ink }}>
+              <div>
+                <strong>{site.storeName}</strong>
+              </div>
+              <div>
+                واتساب:{" "}
+                <span dir="ltr" style={{ unicodeBidi: "embed" }}>
+                  {formatPhoneDisplay(site.whatsapp)}
+                </span>
+              </div>
+              {socials.map(([label, url]) => (
+                <div key={label} style={{ color: muted, fontSize: "12px" }}>
+                  {label}:{" "}
+                  <span dir="ltr" style={{ unicodeBidi: "embed" }}>
+                    {url.replace(/^https?:\/\//, "")}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <table
+          style={{
+            width: "100%",
+            borderCollapse: "collapse",
+            marginTop: "20px",
+          }}
+        >
+          <thead>
+            <tr>
+              <th style={{ ...headCell, width: "6%" }}>#</th>
+              <th style={headCell}>الصنف</th>
+              <th style={{ ...headCell, width: "13%" }}>الحجم</th>
+              <th style={{ ...headCell, width: "10%" }}>الكمية</th>
+              <th style={{ ...headCell, width: "16%" }}>سعر الوحدة</th>
+              <th style={{ ...headCell, width: "16%" }}>الإجمالي</th>
+            </tr>
+          </thead>
+
+          <tbody>
+            {items.map((item, index) => (
+              <tr
+                key={`${item.productId}-${index}`}
+                style={{ background: index % 2 === 1 ? "#faf6ec" : "#fff" }}
+              >
+                <td style={cell}>{index + 1}</td>
+                <td style={{ ...cell, fontWeight: "bold" }}>{item.name}</td>
+                <td style={cell}>{item.size || "—"}</td>
+                <td style={cell}>{item.quantity}</td>
+                <td style={cell}>{formatMoney(item.price)} ر.س</td>
+                <td style={{ ...cell, fontWeight: "bold" }}>
+                  {formatMoney(Number(item.price) * Number(item.quantity))} ر.س
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
+        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "18px" }}>
+          <div
+            style={{
+              minWidth: "270px",
+              padding: "14px 18px",
+              background: ink,
+              color: "#e8d29b",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: "24px",
+              borderRight: `5px solid ${gold}`,
+            }}
+          >
+            <span style={{ fontSize: "14px" }}>الإجمالي المستحق</span>
+            <strong style={{ fontSize: "24px" }}>
+              {formatMoney(order.total)} <small style={{ fontSize: "13px" }}>ر.س</small>
+            </strong>
+          </div>
+        </div>
+
+        <div
+          style={{
+            marginTop: "34px",
+            paddingTop: "14px",
+            borderTop: `1px dashed ${gold}`,
+            textAlign: "center",
+            color: muted,
+            fontSize: "12px",
+            lineHeight: 1.9,
+          }}
+        >
+          <div style={{ color: ink, fontSize: "15px", fontWeight: "bold" }}>
+            شكرًا لتسوقكم من {site.storeName}
+          </div>
+          <div>الأسعار بالريال السعودي • نسعد بخدمتكم دائمًا</div>
+          <div style={{ fontSize: "10px", marginTop: "6px" }}>
+            طُبعت بتاريخ {formatDateTime(printedAt)}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StatCard({ label, value, sub, tone }) {
+  return (
+    <div
+      style={{
+        padding: "16px",
+        border: "1px solid #494131",
+        background: "#10100e",
+      }}
+    >
+      <div style={{ color: "#aaa59a", fontSize: "13px" }}>{label}</div>
+      <div
+        style={{
+          color: tone || "#e8d29b",
+          fontSize: "24px",
+          fontWeight: "bold",
+          margin: "6px 0 2px",
+        }}
+      >
+        {value}
+      </div>
+      {sub && <div style={{ color: "#aaa59a", fontSize: "12px" }}>{sub}</div>}
+    </div>
+  );
+}
+
+function ReportPanel({ title, children }) {
+  return (
+    <div
+      style={{
+        margin: "20px 0",
+        padding: "16px",
+        border: "1px solid #494131",
+        background: "#10100e",
+      }}
+    >
+      <strong style={{ color: "#e8d29b", display: "block", marginBottom: "14px" }}>
+        {title}
+      </strong>
+      {children}
+    </div>
+  );
+}
+
+function SimpleBars({ values, labels, height = 130 }) {
+  const max = Math.max(...values, 0);
+
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-end",
+          gap: "3px",
+          height: `${height + 24}px`,
+          minWidth: `${values.length * 18}px`,
+        }}
+      >
+        {values.map((value, index) => (
+          <div
+            key={labels[index]}
+            title={`${labels[index]}: ${formatMoney(value)} ر.س`}
+            style={{
+              flex: 1,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "flex-end",
+              height: "100%",
+            }}
+          >
+            <div
+              style={{
+                width: "100%",
+                maxWidth: "30px",
+                height:
+                  max > 0 && value > 0
+                    ? `${Math.max(3, (value / max) * height)}px`
+                    : "0px",
+                background: "#c9a45c",
+              }}
+            />
+            <span style={{ fontSize: "10px", color: "#aaa59a", marginTop: "5px" }}>
+              {labels[index]}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ReportSheet({ report, modeLabel, site, printedAt }) {
+  const gold = "#b8924a";
+  const ink = "#1b1a15";
+  const muted = "#6b6559";
+  const line = "#e7dfcf";
+
+  const cell = {
+    padding: "8px 10px",
+    borderBottom: `1px solid ${line}`,
+    textAlign: "right",
+    fontSize: "13px",
+  };
+  const headCell = { ...cell, background: ink, color: "#e8d29b", fontWeight: "bold" };
+
+  const salesDays = report.daily.filter((day) => day.count > 0);
+
+  const summary = [
+    ["إجمالي المبيعات", `${formatMoney(report.total)} ر.س`],
+    ["عدد الطلبات", String(report.count)],
+    ["متوسط قيمة الطلب", `${formatMoney(report.average)} ر.س`],
+    ["عدد القطع المباعة", String(report.itemsSold)],
+    [
+      "التغير عن الشهر السابق",
+      report.change === null
+        ? "—"
+        : `${report.change >= 0 ? "+" : ""}${report.change.toFixed(1)}٪`,
+    ],
+  ];
+
+  return (
+    <div className="print-paper" dir="rtl">
+      <div
+        style={{
+          height: "10px",
+          background: `linear-gradient(90deg, ${gold}, #e8d29b, ${gold})`,
+        }}
+      />
+
+      <div style={{ padding: "12mm 14mm 10mm" }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            paddingBottom: "14px",
+            borderBottom: `2px solid ${ink}`,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+            {site.logoUrl && (
+              <img
+                src={site.logoUrl}
+                alt="شعار المتجر"
+                style={{ maxHeight: "56px", maxWidth: "110px", objectFit: "contain" }}
+              />
+            )}
+            <div style={{ fontSize: "22px", fontWeight: "bold" }}>{site.storeName}</div>
+          </div>
+
+          <div style={{ textAlign: "left" }}>
+            <div style={{ fontSize: "22px", fontWeight: "bold", color: gold }}>
+              تقرير المبيعات الشهري
+            </div>
+            <div style={{ color: muted }}>{monthLabel(report.monthKey)}</div>
+          </div>
+        </div>
+
+        <p style={{ color: muted, fontSize: "12px", margin: "10px 0 18px" }}>
+          أساس الاحتساب: {modeLabel}
+        </p>
+
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <tbody>
+            {summary.map(([label, value]) => (
+              <tr key={label}>
+                <td style={{ ...cell, color: muted, width: "50%" }}>{label}</td>
+                <td style={{ ...cell, fontWeight: "bold", fontSize: "15px" }}>{value}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
+        <h3 style={{ margin: "24px 0 8px", color: ink }}>أكثر المنتجات مبيعًا</h3>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr>
+              <th style={headCell}>المنتج</th>
+              <th style={{ ...headCell, width: "15%" }}>الكمية</th>
+              <th style={{ ...headCell, width: "25%" }}>الإيراد</th>
+            </tr>
+          </thead>
+          <tbody>
+            {report.products.slice(0, 10).map((product) => (
+              <tr key={product.label}>
+                <td style={cell}>{product.label}</td>
+                <td style={cell}>{product.quantity}</td>
+                <td style={cell}>{formatMoney(product.revenue)} ر.س</td>
+              </tr>
+            ))}
+            {report.products.length === 0 && (
+              <tr>
+                <td style={cell} colSpan={3}>لا توجد مبيعات في هذا الشهر.</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+
+        <h3 style={{ margin: "24px 0 8px", color: ink }}>المبيعات اليومية</h3>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr>
+              <th style={headCell}>اليوم</th>
+              <th style={{ ...headCell, width: "25%" }}>عدد الطلبات</th>
+              <th style={{ ...headCell, width: "30%" }}>المبيعات</th>
+            </tr>
+          </thead>
+          <tbody>
+            {salesDays.map((day) => (
+              <tr key={day.day}>
+                <td style={cell}>{day.day} {ARABIC_MONTHS[report.month]}</td>
+                <td style={cell}>{day.count}</td>
+                <td style={cell}>{formatMoney(day.total)} ر.س</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
+        <div
+          style={{
+            marginTop: "28px",
+            paddingTop: "10px",
+            borderTop: `1px dashed ${gold}`,
+            textAlign: "center",
+            color: muted,
+            fontSize: "11px",
+          }}
+        >
+          صدر هذا التقرير بتاريخ {formatDateTime(printedAt)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function productHasSizes(product) {
   return Array.isArray(product?.sizes) && product.sizes.length > 0;
 }
@@ -394,6 +1269,13 @@ function App() {
   const [bannerLink, setBannerLink] = useState("");
   const [savingBanner, setSavingBanner] = useState(false);
 
+  const [invoiceOrderId, setInvoiceOrderId] = useState(null);
+  const [issuingInvoiceId, setIssuingInvoiceId] = useState(null);
+  const [invoiceSearch, setInvoiceSearch] = useState("");
+  const [reportMonth, setReportMonth] = useState(currentMonthKey);
+  const [reportMode, setReportMode] = useState("confirmed");
+  const [reportPrintOpen, setReportPrintOpen] = useState(false);
+
   const [orders, setOrders] = useState([]);
   const [ordersFilter, setOrdersFilter] = useState("الكل");
   const [customerName, setCustomerName] = useState("");
@@ -402,9 +1284,82 @@ function App() {
   const [paymentMethod, setPaymentMethod] = useState(PAYMENT_METHODS[0]);
   const [placingOrder, setPlacingOrder] = useState(false);
 
-  const [cart, setCart] = useState([]);
+  const [cart, setCart] = useState(loadSavedCart);
+  const [toasts, setToasts] = useState([]);
   const [activeCategory, setActiveCategory] = useState("الكل");
   const [search, setSearch] = useState("");
+
+  // إشعار مؤقت يظهر أسفل الشاشة بدل نافذة alert
+  function showToast(message, type, duration) {
+    const kind =
+      type ||
+      (/^(تم|تمت|أُضيف)/.test(message)
+        ? "success"
+        : /(تعذر|خطأ|عذرًا|غير مصرح|تتجاوز|لا توجد كمية)/.test(message)
+          ? "error"
+          : "info");
+
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const visibleFor =
+      duration || Math.min(10000, 2800 + String(message).length * 55);
+
+    setToasts((current) => [...current.slice(-3), { id, message, kind }]);
+
+    setTimeout(() => {
+      setToasts((current) => current.filter((toast) => toast.id !== id));
+    }, visibleFor);
+  }
+
+  // حفظ السلة في المتصفح عند كل تغيير
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(CART_STORAGE_KEY, JSON.stringify(cart));
+    } catch {
+      // التخزين غير متاح (وضع خاص مثلًا): نتجاهل الحفظ
+    }
+  }, [cart]);
+
+  // مطابقة السلة المحفوظة مع المنتجات الحالية (أسعار، مخزون، منتجات محذوفة)
+  useEffect(() => {
+    if (productsLoading || products.length === 0) return;
+
+    setCart((current) => {
+      let changed = false;
+      const next = [];
+
+      for (const item of current) {
+        const live = products.find((product) => product.id === item.id);
+        const sizeLabel = item.size || "";
+
+        if (!live || (productHasSizes(live) && !getSizeOption(live, sizeLabel))) {
+          changed = true;
+          continue;
+        }
+
+        const stock = getUnitStock(live, sizeLabel);
+        const price = getUnitPrice(live, sizeLabel);
+        const quantity = Math.min(item.quantity, stock);
+
+        if (quantity <= 0) {
+          changed = true;
+          continue;
+        }
+
+        if (
+          quantity !== item.quantity ||
+          price !== item.price ||
+          stock !== item.stock ||
+          live.name !== item.name
+        ) {
+          changed = true;
+        }
+
+        next.push({ ...item, name: live.name, price, stock, quantity });
+      }
+
+      return changed ? next : current;
+    });
+  }, [products, productsLoading]);
 
   // التحقق من حساب المدير عند تحميل التطبيق
   useEffect(() => {
@@ -441,7 +1396,7 @@ function App() {
       (error) => {
         console.error("خطأ في تحميل المنتجات:", error);
         setProductsLoading(false);
-        alert("تعذر تحميل المنتجات. تحقق من اتصال Firebase وصلاحيات القراءة.");
+        showToast("تعذر تحميل المنتجات. تحقق من اتصال Firebase وصلاحيات القراءة.");
       }
     );
 
@@ -538,7 +1493,7 @@ function App() {
       },
       (error) => {
         console.error("خطأ في تحميل الطلبات:", error);
-        alert(
+        showToast(
           "تعذر تحميل الطلبات. رمز الخطأ: " +
             error.code +
             (error.code === "permission-denied"
@@ -566,29 +1521,31 @@ function App() {
   // إضافة منتج إلى السلة مع مراعاة الحجم والمخزون
   function addToCart(product, sizeLabel = "") {
     if (productHasSizes(product) && !getSizeOption(product, sizeLabel)) {
-      alert("يرجى اختيار الحجم أولًا.");
+      showToast("يرجى اختيار الحجم أولًا.");
       return;
     }
 
     const stock = getUnitStock(product, sizeLabel);
 
     if (stock <= 0) {
-      alert("عذرًا، هذا المنتج غير متوفر حاليًا.");
+      showToast("عذرًا، هذا المنتج غير متوفر حاليًا.");
       return;
     }
 
     const key = `${product.id}__${sizeLabel}`;
+    const existing = cart.find((item) => item.key === key);
+
+    if ((existing ? existing.quantity : 0) >= stock) {
+      showToast("لا توجد كمية إضافية متاحة من هذا المنتج.");
+      return;
+    }
 
     setCart((currentCart) => {
-      const existing = currentCart.find((item) => item.key === key);
-      const currentQuantity = existing ? existing.quantity : 0;
+      const found = currentCart.find((item) => item.key === key);
 
-      if (currentQuantity >= stock) {
-        alert("لا توجد كمية إضافية متاحة من هذا المنتج.");
-        return currentCart;
-      }
+      if (found) {
+        if (found.quantity >= stock) return currentCart;
 
-      if (existing) {
         return currentCart.map((item) =>
           item.key === key ? { ...item, quantity: item.quantity + 1 } : item
         );
@@ -607,24 +1564,31 @@ function App() {
         },
       ];
     });
+
+    showToast(
+      `أُضيف "${product.name}${sizeLabel ? ` (${sizeLabel})` : ""}" إلى السلة`,
+      "success"
+    );
   }
 
   // تغيير كمية المنتج داخل السلة
   function changeQuantity(key, amount) {
+    const target = cart.find((item) => item.key === key);
+
+    if (!target) return;
+
+    if (target.quantity + amount > Number(target.stock ?? 10)) {
+      showToast("الكمية المطلوبة تتجاوز المخزون المتوفر.");
+      return;
+    }
+
     setCart((currentCart) =>
       currentCart
-        .map((item) => {
-          if (item.key !== key) return item;
-
-          const newQuantity = item.quantity + amount;
-
-          if (newQuantity > Number(item.stock ?? 10)) {
-            alert("الكمية المطلوبة تتجاوز المخزون المتوفر.");
-            return item;
-          }
-
-          return { ...item, quantity: newQuantity };
-        })
+        .map((item) =>
+          item.key === key
+            ? { ...item, quantity: item.quantity + amount }
+            : item
+        )
         .filter((item) => item.quantity > 0)
     );
   }
@@ -637,7 +1601,7 @@ function App() {
   // حفظ الطلب في Firestore ثم إرساله عبر واتساب
   async function checkout() {
     if (cart.length === 0) {
-      alert("سلة المشتريات فارغة!");
+      showToast("سلة المشتريات فارغة!");
       return;
     }
 
@@ -646,17 +1610,17 @@ function App() {
     const address = customerAddress.trim();
 
     if (name.length < 2) {
-      alert("يرجى إدخال اسمك.");
+      showToast("يرجى إدخال اسمك.");
       return;
     }
 
     if (phone.length < 11 || phone.length > 15) {
-      alert("يرجى إدخال رقم جوال صحيح.");
+      showToast("يرجى إدخال رقم جوال صحيح.");
       return;
     }
 
     if (address.length < 5) {
-      alert("يرجى إدخال عنوان التوصيل.");
+      showToast("يرجى إدخال عنوان التوصيل.");
       return;
     }
 
@@ -668,7 +1632,7 @@ function App() {
       const sizeLabel = cartItem.size || "";
 
       if (!live) {
-        alert(`المنتج "${cartItem.name}" لم يعد متوفرًا. تم حذفه من السلة.`);
+        showToast(`المنتج "${cartItem.name}" لم يعد متوفرًا. تم حذفه من السلة.`);
         setCart((current) =>
           current.filter((item) => item.key !== cartItem.key)
         );
@@ -676,7 +1640,7 @@ function App() {
       }
 
       if (productHasSizes(live) && !getSizeOption(live, sizeLabel)) {
-        alert(`الحجم المختار من "${live.name}" لم يعد متوفرًا. تم حذفه من السلة.`);
+        showToast(`الحجم المختار من "${live.name}" لم يعد متوفرًا. تم حذفه من السلة.`);
         setCart((current) =>
           current.filter((item) => item.key !== cartItem.key)
         );
@@ -684,7 +1648,7 @@ function App() {
       }
 
       if (cartItem.quantity > getUnitStock(live, sizeLabel)) {
-        alert(`الكمية المطلوبة من "${live.name}" تتجاوز المخزون المتوفر.`);
+        showToast(`الكمية المطلوبة من "${live.name}" تتجاوز المخزون المتوفر.`);
         return;
       }
 
@@ -727,7 +1691,7 @@ function App() {
 
       if (whatsappWindow) whatsappWindow.close();
 
-      alert("تعذر إرسال الطلب. تحقق من الاتصال وحاول مرة أخرى.");
+      showToast("تعذر إرسال الطلب. تحقق من الاتصال وحاول مرة أخرى.");
       setPlacingOrder(false);
       return;
     }
@@ -768,7 +1732,7 @@ function App() {
     setPaymentMethod(PAYMENT_METHODS[0]);
     setPlacingOrder(false);
 
-    alert(`تم تسجيل طلبك برقم ${orderNumber}. شكرًا لك!`);
+    showToast(`تم تسجيل طلبك برقم ${orderNumber}. شكرًا لك!`, "success", 12000);
   }
 
   // تسجيل دخول المدير
@@ -785,7 +1749,7 @@ function App() {
       if (result.user.uid !== ADMIN_UID) {
         await signOut(auth);
         setIsAdmin(false);
-        alert("هذا الحساب غير مصرح له بإدارة المتجر.");
+        showToast("هذا الحساب غير مصرح له بإدارة المتجر.");
         return;
       }
 
@@ -793,7 +1757,7 @@ function App() {
       setAdminMode(true);
       setAdminPassword("");
 
-      alert("تم تسجيل الدخول بنجاح.");
+      showToast("تم تسجيل الدخول بنجاح.");
     } catch (error) {
       console.error("خطأ تسجيل الدخول:", error);
 
@@ -802,9 +1766,9 @@ function App() {
         error.code === "auth/wrong-password" ||
         error.code === "auth/user-not-found"
       ) {
-        alert("البريد الإلكتروني أو كلمة المرور غير صحيحة.");
+        showToast("البريد الإلكتروني أو كلمة المرور غير صحيحة.");
       } else {
-        alert("رمز الخطأ: " + error.code + " | التفاصيل: " + error.message);
+        showToast("رمز الخطأ: " + error.code + " | التفاصيل: " + error.message);
       }
     }
   }
@@ -820,10 +1784,10 @@ function App() {
       setAdminPassword("");
       clearProductForm();
 
-      alert("تم تسجيل الخروج بنجاح.");
+      showToast("تم تسجيل الخروج بنجاح.");
     } catch (error) {
       console.error("خطأ تسجيل الخروج:", error);
-      alert("تعذر تسجيل الخروج. حاول مرة أخرى.");
+      showToast("تعذر تسجيل الخروج. حاول مرة أخرى.");
     }
   }
 
@@ -832,12 +1796,12 @@ function App() {
     event.preventDefault();
 
     if (!isAdmin) {
-      alert("يجب تسجيل الدخول بحساب المدير أولًا.");
+      showToast("يجب تسجيل الدخول بحساب المدير أولًا.");
       return;
     }
 
     if (!productName.trim()) {
-      alert("يرجى إدخال اسم المنتج.");
+      showToast("يرجى إدخال اسم المنتج.");
       return;
     }
 
@@ -852,7 +1816,7 @@ function App() {
       discountPercent < 0 ||
       discountPercent > 100
     ) {
-      alert("يرجى إدخال نسبة خصم من 0 إلى 100.");
+      showToast("يرجى إدخال نسبة خصم من 0 إلى 100.");
       return;
     }
 
@@ -865,12 +1829,12 @@ function App() {
         const sizeStock = Number(row.stock);
 
         if (!label) {
-          alert("يرجى إدخال اسم لكل حجم (مثال: 50 مل).");
+          showToast("يرجى إدخال اسم لكل حجم (مثال: 50 مل).");
           return;
         }
 
         if (seen.has(label)) {
-          alert(`الحجم "${label}" مكرر.`);
+          showToast(`الحجم "${label}" مكرر.`);
           return;
         }
 
@@ -881,7 +1845,7 @@ function App() {
           !Number.isFinite(sizePrice) ||
           sizePrice <= 0
         ) {
-          alert(`يرجى إدخال سعر صحيح للحجم "${label}".`);
+          showToast(`يرجى إدخال سعر صحيح للحجم "${label}".`);
           return;
         }
 
@@ -890,7 +1854,7 @@ function App() {
           !Number.isInteger(sizeStock) ||
           sizeStock < 0
         ) {
-          alert(`يرجى إدخال مخزون صحيح للحجم "${label}".`);
+          showToast(`يرجى إدخال مخزون صحيح للحجم "${label}".`);
           return;
         }
 
@@ -906,7 +1870,7 @@ function App() {
         !Number.isFinite(price) ||
         price <= 0
       ) {
-        alert("يرجى إدخال سعر صحيح أكبر من صفر.");
+        showToast("يرجى إدخال سعر صحيح أكبر من صفر.");
         return;
       }
 
@@ -915,7 +1879,7 @@ function App() {
         !Number.isInteger(stock) ||
         stock < 0
       ) {
-        alert("يرجى إدخال كمية صحيحة من الأعداد الصحيحة.");
+        showToast("يرجى إدخال كمية صحيحة من الأعداد الصحيحة.");
         return;
       }
     }
@@ -935,7 +1899,7 @@ function App() {
       }
 
       if (!imageUrl) {
-        alert("يرجى اختيار صورة للمنتج.");
+        showToast("يرجى اختيار صورة للمنتج.");
         return;
       }
 
@@ -961,12 +1925,12 @@ function App() {
 
       clearProductForm();
 
-      alert(
+      showToast(
         wasEditing ? "تم تحديث المنتج بنجاح." : "تمت إضافة المنتج بنجاح."
       );
     } catch (error) {
       console.error("خطأ في حفظ المنتج:", error);
-      alert("تعذر حفظ المنتج: " + (error.message || "خطأ غير معروف"));
+      showToast("تعذر حفظ المنتج: " + (error.message || "خطأ غير معروف"));
     } finally {
       setSavingProduct(false);
     }
@@ -975,7 +1939,7 @@ function App() {
   // تحميل بيانات المنتج إلى النموذج للتعديل
   function editProduct(product) {
     if (!isAdmin) {
-      alert("غير مصرح لك بتعديل المنتجات.");
+      showToast("غير مصرح لك بتعديل المنتجات.");
       return;
     }
 
@@ -1003,7 +1967,7 @@ function App() {
   // حذف منتج من Firebase والسلة
   async function deleteProduct(id) {
     if (!isAdmin) {
-      alert("غير مصرح لك بحذف المنتجات.");
+      showToast("غير مصرح لك بحذف المنتجات.");
       return;
     }
 
@@ -1020,10 +1984,10 @@ function App() {
         clearProductForm();
       }
 
-      alert("تم حذف المنتج بنجاح.");
+      showToast("تم حذف المنتج بنجاح.");
     } catch (error) {
       console.error("خطأ في حذف المنتج:", error);
-      alert("تعذر حذف المنتج. تحقق من صلاحيات Firebase.");
+      showToast("تعذر حذف المنتج. تحقق من صلاحيات Firebase.");
     }
   }
 
@@ -1100,7 +2064,7 @@ function App() {
   // تغيير حالة الطلب مع خصم المخزون أو إعادته تلقائيًا
   async function changeOrderStatus(order, newStatus) {
     if (!isAdmin) {
-      alert("غير مصرح لك بإدارة الطلبات.");
+      showToast("غير مصرح لك بإدارة الطلبات.");
       return;
     }
 
@@ -1186,20 +2150,32 @@ function App() {
       await batch.commit();
     } catch (error) {
       console.error("خطأ في تحديث الطلب:", error);
-      alert("تعذر تحديث الطلب. تحقق من صلاحيات Firebase.");
+      showToast("تعذر تحديث الطلب. تحقق من صلاحيات Firebase.");
     }
   }
 
   // حذف طلب
   async function deleteOrder(order) {
     if (!isAdmin) {
-      alert("غير مصرح لك بحذف الطلبات.");
+      showToast("غير مصرح لك بحذف الطلبات.");
       return;
     }
 
+    const warnings = [];
+
+    if (order.invoiceNumber) {
+      warnings.push(
+        `هذا الطلب له فاتورة (${order.invoiceNumber}) وسيُحذف معها من سجل الفواتير.`
+      );
+    }
+
+    if (order.stockDeducted) {
+      warnings.push("هذا الطلب خُصم مخزونه، وحذفه لن يعيد المخزون.");
+    }
+
     const confirmed = window.confirm(
-      order.stockDeducted
-        ? "هذا الطلب خُصم مخزونه. حذفه لن يعيد المخزون. هل تريد المتابعة؟"
+      warnings.length > 0
+        ? `${warnings.join("\n")}\nهل تريد المتابعة؟`
         : "هل أنت متأكد من حذف هذا الطلب؟"
     );
 
@@ -1209,7 +2185,7 @@ function App() {
       await deleteDoc(doc(db, "orders", order.id));
     } catch (error) {
       console.error("خطأ في حذف الطلب:", error);
-      alert("تعذر حذف الطلب. تحقق من صلاحيات Firebase.");
+      showToast("تعذر حذف الطلب. تحقق من صلاحيات Firebase.");
     }
   }
 
@@ -1242,24 +2218,24 @@ function App() {
     event.preventDefault();
 
     if (!isAdmin) {
-      alert("غير مصرح لك بتعديل إعدادات الموقع.");
+      showToast("غير مصرح لك بتعديل إعدادات الموقع.");
       return;
     }
 
     if (!siteAboutText.trim()) {
-      alert("يرجى كتابة نص النبذة.");
+      showToast("يرجى كتابة نص النبذة.");
       return;
     }
 
     if (!siteStoreName.trim() || !siteStoreNameEn.trim()) {
-      alert("يرجى إدخال اسم المتجر بالعربي والإنجليزي.");
+      showToast("يرجى إدخال اسم المتجر بالعربي والإنجليزي.");
       return;
     }
 
     const whatsappDigits = normalizePhone(siteWhatsapp);
 
     if (whatsappDigits.length < 11 || whatsappDigits.length > 15) {
-      alert("يرجى إدخال رقم واتساب صحيح (مثل 0501234567).");
+      showToast("يرجى إدخال رقم واتساب صحيح (مثل 0501234567).");
       return;
     }
 
@@ -1270,7 +2246,7 @@ function App() {
       ["X (تويتر)", siteTwitter],
     ]) {
       if (value.trim() && !isHttpUrl(value)) {
-        alert(`رابط ${label} يجب أن يبدأ بـ https://`);
+        showToast(`رابط ${label} يجب أن يبدأ بـ https://`);
         return;
       }
     }
@@ -1303,10 +2279,10 @@ function App() {
         { merge: true }
       );
 
-      alert("تم حفظ إعدادات الموقع.");
+      showToast("تم حفظ إعدادات الموقع.");
     } catch (error) {
       console.error("خطأ في حفظ إعدادات الموقع:", error);
-      alert("تعذر حفظ الإعدادات: " + (error.message || "خطأ غير معروف"));
+      showToast("تعذر حفظ الإعدادات: " + (error.message || "خطأ غير معروف"));
     } finally {
       setSavingSite(false);
     }
@@ -1322,7 +2298,7 @@ function App() {
       await setDoc(doc(db, "settings", "site"), { logoUrl: "" }, { merge: true });
     } catch (error) {
       console.error("خطأ في إزالة الشعار:", error);
-      alert("تعذر إزالة الشعار.");
+      showToast("تعذر إزالة الشعار.");
     }
   }
 
@@ -1331,17 +2307,17 @@ function App() {
     event.preventDefault();
 
     if (!isAdmin) {
-      alert("غير مصرح لك بإضافة البنرات.");
+      showToast("غير مصرح لك بإضافة البنرات.");
       return;
     }
 
     if (!bannerFile) {
-      alert("يرجى اختيار صورة البنر.");
+      showToast("يرجى اختيار صورة البنر.");
       return;
     }
 
     if (bannerLink.trim() && !isSafeLink(bannerLink)) {
-      alert("الرابط يجب أن يبدأ بـ https:// أو # (مثل #products).");
+      showToast("الرابط يجب أن يبدأ بـ https:// أو # (مثل #products).");
       return;
     }
 
@@ -1365,10 +2341,10 @@ function App() {
       setBannerSubtitle("");
       setBannerLink("");
 
-      alert("تمت إضافة البنر بنجاح.");
+      showToast("تمت إضافة البنر بنجاح.");
     } catch (error) {
       console.error("خطأ في إضافة البنر:", error);
-      alert("تعذر إضافة البنر: " + (error.message || "خطأ غير معروف"));
+      showToast("تعذر إضافة البنر: " + (error.message || "خطأ غير معروف"));
     } finally {
       setSavingBanner(false);
     }
@@ -1383,7 +2359,7 @@ function App() {
       });
     } catch (error) {
       console.error("خطأ في تحديث البنر:", error);
-      alert("تعذر تحديث البنر.");
+      showToast("تعذر تحديث البنر.");
     }
   }
 
@@ -1396,7 +2372,7 @@ function App() {
       await deleteDoc(doc(db, "banners", banner.id));
     } catch (error) {
       console.error("خطأ في حذف البنر:", error);
-      alert("تعذر حذف البنر.");
+      showToast("تعذر حذف البنر.");
     }
   }
 
@@ -1420,7 +2396,7 @@ function App() {
       await batch.commit();
     } catch (error) {
       console.error("خطأ في ترتيب البنرات:", error);
-      alert("تعذر تغيير الترتيب.");
+      showToast("تعذر تغيير الترتيب.");
     }
   }
 
@@ -1471,6 +2447,113 @@ function App() {
     return issues;
   }
 
+  // إصدار فاتورة برقم تسلسلي (مرة واحدة لكل طلب) ثم عرضها للطباعة
+  async function openInvoice(order) {
+    if (!isAdmin) {
+      alert("غير مصرح لك بإدارة الفواتير.");
+      return;
+    }
+
+    if (order.invoiceNumber) {
+      setInvoiceOrderId(order.id);
+      return;
+    }
+
+    setIssuingInvoiceId(order.id);
+
+    try {
+      await runTransaction(db, async (transaction) => {
+        const orderRef = doc(db, "orders", order.id);
+        const counterRef = doc(db, "settings", "counters");
+
+        const orderSnap = await transaction.get(orderRef);
+
+        if (!orderSnap.exists()) {
+          throw new Error("الطلب غير موجود.");
+        }
+
+        // أُصدرت فاتورته من جهاز آخر في الأثناء
+        if (orderSnap.data().invoiceNumber) return;
+
+        const counterSnap = await transaction.get(counterRef);
+        const next =
+          (counterSnap.exists() ? Number(counterSnap.data().invoice) || 0 : 0) + 1;
+
+        transaction.set(counterRef, { invoice: next }, { merge: true });
+
+        transaction.update(orderRef, {
+          invoiceNumber: `INV-${String(next).padStart(5, "0")}`,
+          invoiceSeq: next,
+          invoiceDate: serverTimestamp(),
+        });
+      });
+
+      setInvoiceOrderId(order.id);
+    } catch (error) {
+      console.error("خطأ في إصدار الفاتورة:", error);
+      alert("تعذر إصدار الفاتورة: " + (error.message || "خطأ غير معروف"));
+    } finally {
+      setIssuingInvoiceId(null);
+    }
+  }
+
+  const invoiceOrder = orders.find((order) => order.id === invoiceOrderId) || null;
+
+  const issuedInvoices = orders
+    .filter((order) => order.invoiceNumber)
+    .sort((a, b) => Number(b.invoiceSeq || 0) - Number(a.invoiceSeq || 0));
+
+  const invoiceQuery = invoiceSearch.trim().toLowerCase();
+
+  const filteredInvoices = invoiceQuery
+    ? issuedInvoices.filter((order) =>
+        [
+          order.invoiceNumber,
+          order.orderNumber,
+          order.customerName,
+          order.customerPhone,
+        ]
+          .join(" ")
+          .toLowerCase()
+          .includes(invoiceQuery)
+      )
+    : issuedInvoices;
+
+  const ordersWithoutInvoice = orders.filter(
+    (order) => !order.invoiceNumber && order.status !== "ملغي"
+  );
+
+  const isReportsTab = adminMode && isAdmin && adminTab === "reports";
+
+  const report = isReportsTab
+    ? buildSalesReport(orders, reportMonth, reportMode)
+    : null;
+
+  const overview = isReportsTab
+    ? computeOverview(orders, reportMode)
+    : null;
+
+  const modeLabel =
+    SALE_MODES.find(([key]) => key === reportMode)?.[1] || "";
+
+  // منتجات وأحجام مخزونها 3 قطع أو أقل
+  const lowStockItems = isReportsTab
+    ? products.flatMap((product) => {
+        if (productHasSizes(product)) {
+          return product.sizes
+            .filter((size) => Number(size.stock) <= 3)
+            .map((size) => ({
+              label: `${product.name} (${size.label})`,
+              stock: Number(size.stock),
+            }));
+        }
+
+        return Number(product.stock ?? 10) <= 3
+          ? [{ label: product.name, stock: Number(product.stock ?? 10) }]
+          : [];
+      })
+    : [];
+
   const newOrdersCount = orders.filter(
     (order) => order.status === "جديد"
   ).length;
@@ -1482,6 +2565,57 @@ function App() {
 
   return (
     <div className="store" dir="rtl">
+      <div
+        aria-live="polite"
+        style={{
+          position: "fixed",
+          bottom: "20px",
+          left: 0,
+          right: 0,
+          zIndex: 2000,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          gap: "8px",
+          padding: "0 16px",
+          pointerEvents: "none",
+        }}
+      >
+        {toasts.map((toast) => (
+          <div
+            key={toast.id}
+            role="status"
+            onClick={() =>
+              setToasts((current) =>
+                current.filter((item) => item.id !== toast.id)
+              )
+            }
+            style={{
+              pointerEvents: "auto",
+              cursor: "pointer",
+              maxWidth: "460px",
+              padding: "12px 18px",
+              background: "#1b1a15",
+              color: "#f7f2e8",
+              borderRight: `4px solid ${
+                toast.kind === "success"
+                  ? "#5fae7a"
+                  : toast.kind === "error"
+                    ? "#d9684b"
+                    : "#c9a45c"
+              }`,
+              border: "1px solid #494131",
+              borderRightWidth: "4px",
+              boxShadow: "0 6px 24px rgba(0, 0, 0, 0.5)",
+              fontSize: "15px",
+              lineHeight: 1.6,
+            }}
+          >
+            {toast.message}
+          </div>
+        ))}
+      </div>
+
       {site.announcement && (
         <div className="announcement">{site.announcement}</div>
       )}
@@ -1598,6 +2732,8 @@ function App() {
                     ? `الطلبات (${newOrdersCount} جديد)`
                     : "الطلبات",
                 ],
+                ["invoices", "الفواتير"],
+                ["reports", "التقارير"],
                 ["site", "الموقع والبنرات"],
               ].map(([key, label]) => (
                 <button
@@ -2117,6 +3253,19 @@ function App() {
                       <button
                         type="button"
                         className="add-button"
+                        disabled={issuingInvoiceId === order.id}
+                        onClick={() => openInvoice(order)}
+                      >
+                        {issuingInvoiceId === order.id
+                          ? "جارٍ الإصدار..."
+                          : order.invoiceNumber
+                            ? `🧾 ${order.invoiceNumber}`
+                            : "🧾 إصدار فاتورة"}
+                      </button>
+
+                      <button
+                        type="button"
+                        className="add-button"
                         onClick={() => deleteOrder(order)}
                       >
                         حذف
@@ -2137,6 +3286,388 @@ function App() {
               )}
             </div>
               </>
+            )}
+
+            {adminTab === "invoices" && (
+              <div style={{ maxWidth: "900px", margin: "0 auto", color: "#f7f2e8" }}>
+                <h3 style={{ color: "#e8d29b", textAlign: "center" }}>
+                  الفواتير ({issuedInvoices.length})
+                </h3>
+
+                <input
+                  type="search"
+                  value={invoiceSearch}
+                  onChange={(event) => setInvoiceSearch(event.target.value)}
+                  placeholder="ابحث برقم الفاتورة أو الطلب أو اسم العميل أو الجوال"
+                  style={adminInputStyle}
+                />
+
+                <p style={{ color: "#aaa59a", fontSize: "14px", margin: "10px 0 18px" }}>
+                  {filteredInvoices.length} فاتورة • إجمالي قيمتها{" "}
+                  {formatMoney(
+                    filteredInvoices.reduce(
+                      (sum, order) => sum + (Number(order.total) || 0),
+                      0
+                    )
+                  )}{" "}
+                  ر.س
+                </p>
+
+                {filteredInvoices.map((order) => (
+                  <div
+                    key={order.id}
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      flexWrap: "wrap",
+                      gap: "12px",
+                      padding: "14px 16px",
+                      marginBottom: "10px",
+                      border: "1px solid #494131",
+                      background: "#10100e",
+                    }}
+                  >
+                    <div>
+                      <strong dir="ltr" style={{ color: "#e8d29b" }}>
+                        {order.invoiceNumber}
+                      </strong>
+                      <div style={{ margin: "4px 0", color: "#f7f2e8" }}>
+                        {order.customerName}
+                      </div>
+                      <div style={{ color: "#aaa59a", fontSize: "13px" }}>
+                        {formatLongDate(toDateSafe(order.invoiceDate))} • طلب{" "}
+                        <span dir="ltr">{order.orderNumber}</span> • {order.status}
+                      </div>
+                    </div>
+
+                    <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                      <strong style={{ color: "#e8d29b" }}>
+                        {formatMoney(order.total)} ر.س
+                      </strong>
+
+                      <button
+                        type="button"
+                        className="add-button"
+                        onClick={() => setInvoiceOrderId(order.id)}
+                      >
+                        🖨️ عرض وطباعة
+                      </button>
+                    </div>
+                  </div>
+                ))}
+
+                {filteredInvoices.length === 0 && (
+                  <p className="empty-message">
+                    {issuedInvoices.length === 0
+                      ? "لم تُصدر أي فاتورة بعد. أصدر الفاتورة من الطلبات الموجودة أدناه."
+                      : "لا توجد فواتير تطابق بحثك."}
+                  </p>
+                )}
+
+                <h3 style={{ color: "#e8d29b", textAlign: "center", marginTop: "40px" }}>
+                  طلبات بلا فاتورة ({ordersWithoutInvoice.length})
+                </h3>
+
+                {ordersWithoutInvoice.slice(0, 20).map((order) => (
+                  <div
+                    key={order.id}
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      flexWrap: "wrap",
+                      gap: "12px",
+                      padding: "12px 16px",
+                      marginBottom: "8px",
+                      border: "1px solid #494131",
+                      background: "#10100e",
+                    }}
+                  >
+                    <div>
+                      <strong dir="ltr" style={{ color: "#e8d29b" }}>
+                        {order.orderNumber}
+                      </strong>
+                      <span style={{ margin: "0 10px" }}>{order.customerName}</span>
+                      <span style={{ color: "#aaa59a", fontSize: "13px" }}>
+                        {order.status} • {formatMoney(order.total)} ر.س
+                      </span>
+                    </div>
+
+                    <button
+                      type="button"
+                      className="add-button"
+                      disabled={issuingInvoiceId === order.id}
+                      onClick={() => openInvoice(order)}
+                    >
+                      {issuingInvoiceId === order.id ? "جارٍ الإصدار..." : "🧾 إصدار فاتورة"}
+                    </button>
+                  </div>
+                ))}
+
+                {ordersWithoutInvoice.length === 0 && (
+                  <p className="empty-message">كل الطلبات لها فواتير.</p>
+                )}
+              </div>
+            )}
+
+            {adminTab === "reports" && report && overview && (
+              <div style={{ maxWidth: "1000px", margin: "0 auto", color: "#f7f2e8" }}>
+                <h3 style={{ color: "#e8d29b", textAlign: "center" }}>نظرة عامة</h3>
+
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))",
+                    gap: "12px",
+                  }}
+                >
+                  <StatCard
+                    label="مبيعات اليوم"
+                    value={`${formatMoney(overview.today)} ر.س`}
+                    sub={`${overview.todayCount} طلب`}
+                  />
+                  <StatCard
+                    label="مبيعات هذا الشهر"
+                    value={`${formatMoney(overview.month)} ر.س`}
+                    sub={`${overview.monthCount} طلب`}
+                  />
+                  <StatCard
+                    label="طلبات جديدة بانتظارك"
+                    value={newOrdersCount}
+                    sub="لم تُعالج بعد"
+                    tone={newOrdersCount > 0 ? "#ffb48a" : undefined}
+                  />
+                  <StatCard
+                    label="مخزون منخفض"
+                    value={lowStockItems.length}
+                    sub="3 قطع أو أقل"
+                    tone={lowStockItems.length > 0 ? "#ffb48a" : undefined}
+                  />
+                </div>
+
+                <h3 style={{ color: "#e8d29b", textAlign: "center", marginTop: "40px" }}>
+                  تقرير المبيعات الشهري
+                </h3>
+
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+                    gap: "12px",
+                    alignItems: "end",
+                  }}
+                >
+                  <label>
+                    الشهر
+                    <input
+                      type="month"
+                      value={reportMonth}
+                      onChange={(event) =>
+                        setReportMonth(event.target.value || currentMonthKey())
+                      }
+                      style={adminInputStyle}
+                    />
+                  </label>
+
+                  <label>
+                    أساس احتساب المبيعات
+                    <select
+                      value={reportMode}
+                      onChange={(event) => setReportMode(event.target.value)}
+                      style={adminInputStyle}
+                    >
+                      {SALE_MODES.map(([key, label]) => (
+                        <option key={key} value={key}>
+                          {label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                    <button
+                      type="button"
+                      className="add-button"
+                      onClick={() => setReportPrintOpen(true)}
+                    >
+                      🖨️ طباعة التقرير
+                    </button>
+
+                    <button
+                      type="button"
+                      className="add-button"
+                      disabled={report.monthOrders.length === 0}
+                      onClick={() =>
+                        exportOrdersCsv(report.monthOrders, report.monthKey)
+                      }
+                    >
+                      ⬇ تصدير الطلبات (Excel)
+                    </button>
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))",
+                    gap: "12px",
+                    marginTop: "20px",
+                  }}
+                >
+                  <StatCard
+                    label={`إجمالي مبيعات ${monthLabel(report.monthKey)}`}
+                    value={`${formatMoney(report.total)} ر.س`}
+                  />
+                  <StatCard label="عدد الطلبات" value={report.count} />
+                  <StatCard
+                    label="متوسط قيمة الطلب"
+                    value={`${formatMoney(report.average)} ر.س`}
+                  />
+                  <StatCard label="القطع المباعة" value={report.itemsSold} />
+                  <StatCard
+                    label="مقارنة بالشهر السابق"
+                    value={
+                      report.change === null
+                        ? "—"
+                        : `${report.change >= 0 ? "▲ +" : "▼ "}${report.change.toFixed(1)}٪`
+                    }
+                    sub={`الشهر السابق: ${formatMoney(report.prevTotal)} ر.س`}
+                    tone={
+                      report.change === null
+                        ? undefined
+                        : report.change >= 0
+                          ? "#7fd39a"
+                          : "#ff9b80"
+                    }
+                  />
+                </div>
+
+                <ReportPanel title="المبيعات اليومية (ر.س)">
+                  <SimpleBars
+                    values={report.daily.map((day) => day.total)}
+                    labels={report.daily.map((day) => String(day.day))}
+                  />
+                </ReportPanel>
+
+                <ReportPanel title={`المبيعات الشهرية خلال ${report.year} (ر.س)`}>
+                  <SimpleBars
+                    values={report.yearTotals}
+                    labels={ARABIC_MONTHS.map((name) => name.slice(0, 4))}
+                    height={110}
+                  />
+                </ReportPanel>
+
+                <ReportPanel title="أكثر المنتجات مبيعًا">
+                  {report.products.length === 0 ? (
+                    <p style={{ color: "#aaa59a", margin: 0 }}>
+                      لا توجد مبيعات في هذا الشهر.
+                    </p>
+                  ) : (
+                    <div style={{ overflowX: "auto" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                        <thead>
+                          <tr style={{ color: "#aaa59a", fontSize: "13px" }}>
+                            <th style={{ textAlign: "right", padding: "6px" }}>المنتج</th>
+                            <th style={{ textAlign: "right", padding: "6px" }}>الكمية</th>
+                            <th style={{ textAlign: "right", padding: "6px" }}>الإيراد</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {report.products.slice(0, 10).map((product) => (
+                            <tr key={product.label} style={{ borderTop: "1px solid #2b281f" }}>
+                              <td style={{ padding: "8px 6px" }}>{product.label}</td>
+                              <td style={{ padding: "8px 6px" }}>{product.quantity}</td>
+                              <td style={{ padding: "8px 6px", color: "#e8d29b" }}>
+                                {formatMoney(product.revenue)} ر.س
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </ReportPanel>
+
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
+                    gap: "0 20px",
+                  }}
+                >
+                  <ReportPanel title="طرق الدفع">
+                    {report.payments.length === 0 ? (
+                      <p style={{ color: "#aaa59a", margin: 0 }}>لا توجد بيانات.</p>
+                    ) : (
+                      report.payments.map((payment) => (
+                        <div
+                          key={payment.method}
+                          style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            padding: "6px 0",
+                            borderTop: "1px solid #2b281f",
+                          }}
+                        >
+                          <span>
+                            {payment.method} ({payment.count})
+                          </span>
+                          <strong style={{ color: "#e8d29b" }}>
+                            {formatMoney(payment.total)} ر.س
+                          </strong>
+                        </div>
+                      ))
+                    )}
+                  </ReportPanel>
+
+                  <ReportPanel title="حالات طلبات الشهر">
+                    {report.statuses.length === 0 ? (
+                      <p style={{ color: "#aaa59a", margin: 0 }}>لا توجد طلبات.</p>
+                    ) : (
+                      report.statuses.map((entry) => (
+                        <div
+                          key={entry.status}
+                          style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            padding: "6px 0",
+                            borderTop: "1px solid #2b281f",
+                          }}
+                        >
+                          <span>{entry.status}</span>
+                          <strong style={{ color: "#e8d29b" }}>{entry.count}</strong>
+                        </div>
+                      ))
+                    )}
+                  </ReportPanel>
+                </div>
+
+                <ReportPanel title={`تنبيهات المخزون (${lowStockItems.length})`}>
+                  {lowStockItems.length === 0 ? (
+                    <p style={{ color: "#aaa59a", margin: 0 }}>
+                      لا توجد منتجات منخفضة المخزون.
+                    </p>
+                  ) : (
+                    lowStockItems.map((item) => (
+                      <div
+                        key={item.label}
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          padding: "6px 0",
+                          borderTop: "1px solid #2b281f",
+                        }}
+                      >
+                        <span>{item.label}</span>
+                        <strong style={{ color: item.stock <= 0 ? "#ff9b80" : "#ffb48a" }}>
+                          {item.stock <= 0 ? "نفد" : `${item.stock} قطعة`}
+                        </strong>
+                      </div>
+                    ))
+                  )}
+                </ReportPanel>
+              </div>
             )}
 
             {adminTab === "site" && (
@@ -3009,6 +4540,37 @@ function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {invoiceOrder && (
+        <PrintPortal
+          title={
+            invoiceOrder.invoiceNumber
+              ? `فاتورة ${invoiceOrder.invoiceNumber}`
+              : "جارٍ إصدار الفاتورة..."
+          }
+          onClose={() => setInvoiceOrderId(null)}
+        >
+          {invoiceOrder.invoiceNumber ? (
+            <InvoiceSheet order={invoiceOrder} site={site} printedAt={new Date()} />
+          ) : (
+            <p style={{ color: "#fff" }}>جارٍ إصدار الفاتورة...</p>
+          )}
+        </PrintPortal>
+      )}
+
+      {reportPrintOpen && report && (
+        <PrintPortal
+          title={`تقرير مبيعات ${monthLabel(report.monthKey)}`}
+          onClose={() => setReportPrintOpen(false)}
+        >
+          <ReportSheet
+            report={report}
+            modeLabel={modeLabel}
+            site={site}
+            printedAt={new Date()}
+          />
+        </PrintPortal>
       )}
 
       <footer className="footer">
