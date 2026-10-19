@@ -8,6 +8,7 @@ import {
   deleteDoc,
   doc,
   onSnapshot,
+  getDoc,
   query,
   orderBy,
   setDoc,
@@ -162,6 +163,9 @@ const DEFAULT_SITE = {
   tiktok: "",
   snapchat: "",
   twitter: "",
+  shippingDefaultFee: 0,
+  shippingFreeOver: 0,
+  shippingCities: [],
   announcement: "✦ أهلاً بكم في عالم النابع للعطور ✦",
   aboutTitle: "النابع...",
   aboutHighlight: "أثرٌ لا يُنسى",
@@ -349,6 +353,75 @@ function BannerSlider({ banners }) {
   );
 }
 
+const round2 = (value) => Math.round((Number(value) || 0) * 100) / 100;
+
+const COUPON_CODE_PATTERN = /^[\p{L}\p{N}_-]{3,20}$/u;
+
+function normalizeCouponCode(value) {
+  return String(value || "").trim().toUpperCase();
+}
+
+// حساب خصم الكوبون على المجموع الفرعي (بعد خصومات المنتجات)
+function evaluateCoupon(coupon, subtotal, now = new Date()) {
+  const invalid = (message) => ({ valid: false, message, discount: 0 });
+
+  if (!coupon) return invalid("");
+  if (coupon.active === false) return invalid("هذا الكوبون غير مفعّل.");
+
+  if (coupon.expiresOn) {
+    const end = new Date(`${coupon.expiresOn}T23:59:59`);
+
+    if (!Number.isNaN(end.getTime()) && now > end) {
+      return invalid("انتهت صلاحية هذا الكوبون.");
+    }
+  }
+
+  const minOrder = Number(coupon.minOrder) || 0;
+
+  if (minOrder > 0 && subtotal < minOrder) {
+    return invalid(`الحد الأدنى للطلب لهذا الكوبون ${formatPrice(minOrder)} ر.س.`);
+  }
+
+  const limit = Number(coupon.usageLimit) || 0;
+
+  if (limit > 0 && (Number(coupon.usedCount) || 0) >= limit) {
+    return invalid("تم استنفاد عدد مرات استخدام هذا الكوبون.");
+  }
+
+  const value = Number(coupon.value) || 0;
+  let discount = coupon.type === "fixed" ? value : subtotal * (value / 100);
+
+  const maxDiscount = Number(coupon.maxDiscount) || 0;
+
+  if (coupon.type !== "fixed" && maxDiscount > 0) {
+    discount = Math.min(discount, maxDiscount);
+  }
+
+  discount = round2(Math.min(Math.max(discount, 0), subtotal));
+
+  return discount > 0
+    ? { valid: true, message: "", discount }
+    : invalid("لا ينطبق هذا الكوبون على سلتك.");
+}
+
+// رسوم الشحن: حسب المدينة أو الافتراضية، ومجانية فوق حد معين
+function computeShipping(settings, amountAfterDiscount, city) {
+  const cities = Array.isArray(settings.shippingCities)
+    ? settings.shippingCities
+    : [];
+
+  const match = cities.find((entry) => entry && entry.name === city);
+  const fee = match
+    ? Number(match.fee)
+    : Number(settings.shippingDefaultFee) || 0;
+
+  const freeOver = Number(settings.shippingFreeOver) || 0;
+
+  if (freeOver > 0 && amountAfterDiscount >= freeOver) return 0;
+
+  return round2(Math.max(0, fee));
+}
+
 const ARABIC_DATE_LOCALE = "ar-SA-u-ca-gregory-nu-latn";
 
 const ARABIC_MONTHS = [
@@ -489,6 +562,8 @@ function buildSalesReport(orders, monthKey, mode) {
   let count = 0;
   let itemsSold = 0;
   let prevTotal = 0;
+  let discountsTotal = 0;
+  let shippingTotal = 0;
 
   for (const order of orders) {
     const date = toDateSafe(order.createdAt);
@@ -519,6 +594,8 @@ function buildSalesReport(orders, monthKey, mode) {
 
     total += amount;
     count += 1;
+    discountsTotal += Number(order.discount) || 0;
+    shippingTotal += Number(order.shippingFee) || 0;
 
     const bucket = daily[date.getDate() - 1];
     bucket.total += amount;
@@ -552,6 +629,8 @@ function buildSalesReport(orders, monthKey, mode) {
     daily: daily.map((day) => ({ ...day, total: round(day.total) })),
     yearTotals: yearTotals.map(round),
     total: round(total),
+    discountsTotal: round(discountsTotal),
+    shippingTotal: round(shippingTotal),
     count,
     average: count > 0 ? round(total / count) : 0,
     itemsSold,
@@ -583,6 +662,10 @@ function exportOrdersCsv(orders, monthKey) {
     "العنوان",
     "طريقة الدفع",
     "الأصناف",
+    "المدينة",
+    "كود الخصم",
+    "الخصم (ر.س)",
+    "الشحن (ر.س)",
     "الإجمالي (ر.س)",
   ];
 
@@ -608,6 +691,10 @@ function exportOrdersCsv(orders, monthKey) {
           `${item.name}${item.size ? ` (${item.size})` : ""} × ${item.quantity}`
       )
       .join(" | "),
+    order.city || "",
+    order.couponCode || "",
+    Number(order.discount) || 0,
+    Number(order.shippingFee) || 0,
     Number(order.total) || 0,
   ]);
 
@@ -935,7 +1022,50 @@ function InvoiceSheet({ order, site, printedAt }) {
           </tbody>
         </table>
 
-        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "18px", marginBottom: "30px" }}>
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "flex-end",
+            gap: "10px",
+            marginTop: "18px",
+            marginBottom: "30px",
+          }}
+        >
+          {order.subtotal !== undefined && (
+            <div style={{ minWidth: "270px", fontSize: "13px", color: ink }}>
+              <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}>
+                <span style={{ color: muted }}>المجموع</span>
+                <span>{formatMoney(order.subtotal)} ر.س</span>
+              </div>
+
+              {Number(order.discount) > 0 && (
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    padding: "3px 0",
+                    color: "#a52a2a",
+                  }}
+                >
+                  <span>خصم الكوبون ({order.couponCode})</span>
+                  <span>-{formatMoney(order.discount)} ر.س</span>
+                </div>
+              )}
+
+              <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}>
+                <span style={{ color: muted }}>
+                  الشحن{order.city ? ` — ${order.city}` : ""}
+                </span>
+                <span>
+                  {Number(order.shippingFee) > 0
+                    ? `${formatMoney(order.shippingFee)} ر.س`
+                    : "مجاني"}
+                </span>
+              </div>
+            </div>
+          )}
+
           <div
             style={{
               minWidth: "270px",
@@ -1098,6 +1228,8 @@ function ReportSheet({ report, modeLabel, site, printedAt }) {
     ["عدد الطلبات", String(report.count)],
     ["متوسط قيمة الطلب", `${formatMoney(report.average)} ر.س`],
     ["عدد القطع المباعة", String(report.itemsSold)],
+    ["خصومات الكوبونات", `${formatMoney(report.discountsTotal)} ر.س`],
+    ["رسوم الشحن المحصّلة", `${formatMoney(report.shippingTotal)} ر.س`],
     [
       "التغير عن الشهر السابق",
       report.change === null
@@ -1280,6 +1412,28 @@ function App() {
   const [adminTab, setAdminTab] = useState("products");
 
   const [siteSettings, setSiteSettings] = useState({});
+
+  const [appliedCoupon, setAppliedCoupon] = useState(null);
+  const [couponInput, setCouponInput] = useState("");
+  const [checkingCoupon, setCheckingCoupon] = useState(false);
+  const [customerCity, setCustomerCity] = useState("");
+
+  const [couponsList, setCouponsList] = useState([]);
+  const [couponCodeInput, setCouponCodeInput] = useState("");
+  const [couponType, setCouponType] = useState("percent");
+  const [couponValue, setCouponValue] = useState("");
+  const [couponMinOrder, setCouponMinOrder] = useState("");
+  const [couponMaxDiscount, setCouponMaxDiscount] = useState("");
+  const [couponExpiresOn, setCouponExpiresOn] = useState("");
+  const [couponUsageLimit, setCouponUsageLimit] = useState("");
+  const [couponActive, setCouponActive] = useState(true);
+  const [editingCouponCode, setEditingCouponCode] = useState(null);
+  const [savingCoupon, setSavingCoupon] = useState(false);
+
+  const [shipDefaultFee, setShipDefaultFee] = useState("0");
+  const [shipFreeOver, setShipFreeOver] = useState("0");
+  const [shipCityRows, setShipCityRows] = useState([]);
+  const [savingShipping, setSavingShipping] = useState(false);
   const [bannersList, setBannersList] = useState([]);
 
   const [logoFile, setLogoFile] = useState(null);
@@ -1537,6 +1691,41 @@ function App() {
     setLogoFile(null);
   }, [siteSettings]);
 
+  // مزامنة نموذج إعدادات الشحن مع القيم المحفوظة
+  useEffect(() => {
+    setShipDefaultFee(String(siteSettings.shippingDefaultFee ?? 0));
+    setShipFreeOver(String(siteSettings.shippingFreeOver ?? 0));
+    setShipCityRows(
+      (Array.isArray(siteSettings.shippingCities)
+        ? siteSettings.shippingCities
+        : []
+      ).map((entry) => ({
+        name: String(entry.name ?? ""),
+        fee: String(entry.fee ?? 0),
+      }))
+    );
+  }, [siteSettings]);
+
+  // جلب أكواد الخصم (للمدير فقط)
+  useEffect(() => {
+    if (!isAdmin || !isAdminRoute) {
+      setCouponsList([]);
+      return undefined;
+    }
+
+    const unsubscribe = onSnapshot(
+      collection(db, "coupons"),
+      (snapshot) => {
+        setCouponsList(
+          snapshot.docs.map((item) => ({ code: item.id, ...item.data() }))
+        );
+      },
+      (error) => console.error("خطأ في تحميل أكواد الخصم:", error)
+    );
+
+    return () => unsubscribe();
+  }, [isAdmin, isAdminRoute]);
+
   // جلب الطلبات (للمدير فقط)
   useEffect(() => {
     if (!isAdmin || !isAdminRoute) {
@@ -1692,6 +1881,16 @@ function App() {
       return;
     }
 
+    if (
+      shippingCities.length > 0 &&
+      !shippingCities.some((entry) => entry.name === customerCity)
+    ) {
+      showToast("يرجى اختيار المدينة.");
+      return;
+    }
+
+    const cityName = customerCity;
+
     // نعتمد على الأسعار والمخزون الحاليين من قاعدة البيانات لا من السلة
     const items = [];
 
@@ -1729,10 +1928,9 @@ function App() {
       });
     }
 
-    const orderTotal =
-      Math.round(
-        items.reduce((sum, item) => sum + item.price * item.quantity, 0) * 100
-      ) / 100;
+    const subtotal = round2(
+      items.reduce((sum, item) => sum + item.price * item.quantity, 0)
+    );
 
     const orderNumber = generateOrderNumber();
 
@@ -1741,14 +1939,58 @@ function App() {
 
     setPlacingOrder(true);
 
+    let discount = 0;
+    let couponCode = "";
+
+    if (appliedCoupon) {
+      try {
+        // نعيد جلب الكوبون للتأكد من حالته الحالية (تفعيل، صلاحية، عدد الاستخدام)
+        const snap = await getDoc(doc(db, "coupons", appliedCoupon.code));
+        const fresh = snap.exists()
+          ? { code: appliedCoupon.code, ...snap.data() }
+          : null;
+        const result = evaluateCoupon(fresh, subtotal);
+
+        if (!result.valid) {
+          if (whatsappWindow) whatsappWindow.close();
+
+          setAppliedCoupon(null);
+          setPlacingOrder(false);
+          showToast(
+            `لم يعد الكوبون صالحًا. ${result.message || "تمت إزالته من السلة."}`
+          );
+          return;
+        }
+
+        discount = result.discount;
+        couponCode = fresh.code;
+      } catch (error) {
+        console.error("خطأ في التحقق من الكوبون:", error);
+
+        if (whatsappWindow) whatsappWindow.close();
+
+        setPlacingOrder(false);
+        showToast("تعذر التحقق من الكوبون. حاول مرة أخرى.");
+        return;
+      }
+    }
+
+    const shippingFee = computeShipping(site, subtotal - discount, cityName);
+    const orderTotal = round2(subtotal - discount + shippingFee);
+
     try {
       await addDoc(collection(db, "orders"), {
         orderNumber,
         customerName: name,
         customerPhone: phone,
         customerAddress: address,
+        city: cityName,
         paymentMethod,
         items,
+        subtotal,
+        discount,
+        couponCode,
+        shippingFee,
         total: orderTotal,
         status: "جديد",
         stockDeducted: false,
@@ -1777,9 +2019,15 @@ function App() {
       `السلام عليكم، أريد تأكيد طلبي من متجر ${site.storeName}\n` +
       `رقم الطلب: ${orderNumber}\n\n` +
       `${orderDetails}\n\n` +
+      `المجموع: ${formatPrice(subtotal)} ريال\n` +
+      (discount > 0
+        ? `خصم الكوبون (${couponCode}): -${formatPrice(discount)} ريال\n`
+        : "") +
+      `الشحن: ${shippingFee > 0 ? `${formatPrice(shippingFee)} ريال` : "مجاني"}\n` +
       `الإجمالي: ${formatPrice(orderTotal)} ريال\n\n` +
       `الاسم: ${name}\n` +
       `الجوال: ${customerPhone.trim()}\n` +
+      (cityName ? `المدينة: ${cityName}\n` : "") +
       `العنوان: ${address}\n` +
       `طريقة الدفع: ${paymentMethod}`;
 
@@ -1794,6 +2042,9 @@ function App() {
     }
 
     setCart([]);
+    setAppliedCoupon(null);
+    setCouponInput("");
+    setCustomerCity("");
     setCustomerName("");
     setCustomerPhone("");
     setCustomerAddress("");
@@ -2208,6 +2459,16 @@ function App() {
           }
         }
 
+        // عدّاد استخدام الكوبون يتبع نفس منطق خصم المخزون
+        if (
+          order.couponCode &&
+          couponsList.some((coupon) => coupon.code === order.couponCode)
+        ) {
+          batch.update(doc(db, "coupons", order.couponCode), {
+            usedCount: increment(shouldDeduct ? 1 : -1),
+          });
+        }
+
         updates.stockDeducted = shouldDeduct;
       }
 
@@ -2466,6 +2727,292 @@ function App() {
     }
   }
 
+  // ===== ملخص السلة: الكوبون والشحن =====
+  const cartSubtotal = round2(total);
+
+  const couponResult = appliedCoupon
+    ? evaluateCoupon(appliedCoupon, cartSubtotal)
+    : null;
+
+  const couponDiscount = couponResult?.valid ? couponResult.discount : 0;
+
+  const shippingCities = (
+    Array.isArray(site.shippingCities) ? site.shippingCities : []
+  ).filter((entry) => entry && entry.name);
+
+  const cartShipping =
+    cart.length > 0
+      ? computeShipping(site, cartSubtotal - couponDiscount, customerCity)
+      : 0;
+
+  const grandTotal = round2(cartSubtotal - couponDiscount + cartShipping);
+
+  const freeOverAmount = Number(site.shippingFreeOver) || 0;
+
+  const freeShippingGap =
+    freeOverAmount > 0 && cartShipping > 0
+      ? round2(freeOverAmount - (cartSubtotal - couponDiscount))
+      : 0;
+
+  // تطبيق كود الخصم (يُقرأ بالكود مباشرة ولا يمكن استعراض بقية الأكواد)
+  async function applyCoupon() {
+    const code = normalizeCouponCode(couponInput);
+
+    if (!code || !COUPON_CODE_PATTERN.test(code)) {
+      showToast("يرجى إدخال كود خصم صحيح.");
+      return;
+    }
+
+    setCheckingCoupon(true);
+
+    try {
+      const snap = await getDoc(doc(db, "coupons", code));
+
+      if (!snap.exists()) {
+        showToast("كود الخصم غير صحيح.");
+        return;
+      }
+
+      const coupon = { code, ...snap.data() };
+      const result = evaluateCoupon(coupon, cartSubtotal);
+
+      if (!result.valid) {
+        showToast(result.message || "لا ينطبق هذا الكوبون على سلتك.");
+        return;
+      }
+
+      setAppliedCoupon(coupon);
+      setCouponInput("");
+      showToast(
+        `تم تطبيق الكوبون ${code}: خصم ${formatPrice(result.discount)} ر.س`,
+        "success"
+      );
+    } catch (error) {
+      console.error("خطأ في التحقق من الكوبون:", error);
+      showToast("تعذر التحقق من الكوبون. حاول مرة أخرى.");
+    } finally {
+      setCheckingCoupon(false);
+    }
+  }
+
+  // ===== الإدارة: إعدادات الشحن =====
+  async function saveShippingSettings(event) {
+    event.preventDefault();
+
+    if (!isAdmin) {
+      showToast("غير مصرح لك بتعديل إعدادات الشحن.");
+      return;
+    }
+
+    const defaultFee = Number(shipDefaultFee);
+    const freeOver = Number(shipFreeOver);
+
+    if (!Number.isFinite(defaultFee) || defaultFee < 0) {
+      showToast("يرجى إدخال رسوم شحن افتراضية صحيحة (0 أو أكثر).");
+      return;
+    }
+
+    if (!Number.isFinite(freeOver) || freeOver < 0) {
+      showToast("يرجى إدخال حد الشحن المجاني (0 لتعطيله).");
+      return;
+    }
+
+    const seen = new Set();
+    const cities = [];
+
+    for (const row of shipCityRows) {
+      const name = row.name.trim();
+      const fee = Number(row.fee);
+
+      if (!name) {
+        showToast("يرجى إدخال اسم لكل مدينة أو حذف الصف الفارغ.");
+        return;
+      }
+
+      if (seen.has(name)) {
+        showToast(`المدينة "${name}" مكررة.`);
+        return;
+      }
+
+      if (row.fee.trim() === "" || !Number.isFinite(fee) || fee < 0) {
+        showToast(`يرجى إدخال رسوم صحيحة للمدينة "${name}".`);
+        return;
+      }
+
+      seen.add(name);
+      cities.push({ name, fee: round2(fee) });
+    }
+
+    setSavingShipping(true);
+
+    try {
+      await setDoc(
+        doc(db, "settings", "site"),
+        {
+          shippingDefaultFee: round2(defaultFee),
+          shippingFreeOver: round2(freeOver),
+          shippingCities: cities,
+        },
+        { merge: true }
+      );
+
+      showToast("تم حفظ إعدادات الشحن.", "success");
+    } catch (error) {
+      console.error("خطأ في حفظ إعدادات الشحن:", error);
+      showToast("تعذر حفظ إعدادات الشحن: " + (error.message || ""));
+    } finally {
+      setSavingShipping(false);
+    }
+  }
+
+  // ===== الإدارة: أكواد الخصم =====
+  function clearCouponForm() {
+    setCouponCodeInput("");
+    setCouponType("percent");
+    setCouponValue("");
+    setCouponMinOrder("");
+    setCouponMaxDiscount("");
+    setCouponExpiresOn("");
+    setCouponUsageLimit("");
+    setCouponActive(true);
+    setEditingCouponCode(null);
+  }
+
+  function editCoupon(coupon) {
+    setEditingCouponCode(coupon.code);
+    setCouponCodeInput(coupon.code);
+    setCouponType(coupon.type === "fixed" ? "fixed" : "percent");
+    setCouponValue(String(coupon.value ?? ""));
+    setCouponMinOrder(coupon.minOrder ? String(coupon.minOrder) : "");
+    setCouponMaxDiscount(coupon.maxDiscount ? String(coupon.maxDiscount) : "");
+    setCouponExpiresOn(coupon.expiresOn || "");
+    setCouponUsageLimit(coupon.usageLimit ? String(coupon.usageLimit) : "");
+    setCouponActive(coupon.active !== false);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  async function saveCoupon(event) {
+    event.preventDefault();
+
+    if (!isAdmin) {
+      showToast("غير مصرح لك بإدارة أكواد الخصم.");
+      return;
+    }
+
+    const code = normalizeCouponCode(couponCodeInput);
+
+    if (!COUPON_CODE_PATTERN.test(code)) {
+      showToast("الكود من 3 إلى 20 حرفًا أو رقمًا بدون مسافات (مثل RIYADH10).");
+      return;
+    }
+
+    if (
+      editingCouponCode === null &&
+      couponsList.some((coupon) => coupon.code === code)
+    ) {
+      showToast("هذا الكود موجود مسبقًا. عدّله من القائمة.");
+      return;
+    }
+
+    const value = Number(couponValue);
+
+    if (!Number.isFinite(value) || value <= 0) {
+      showToast("يرجى إدخال قيمة الخصم.");
+      return;
+    }
+
+    if (couponType === "percent" && value > 100) {
+      showToast("نسبة الخصم لا تتجاوز 100٪.");
+      return;
+    }
+
+    const optionalNumber = (text) => (text.trim() === "" ? 0 : Number(text));
+    const minOrder = optionalNumber(couponMinOrder);
+    const maxDiscount = optionalNumber(couponMaxDiscount);
+    const usageLimit = optionalNumber(couponUsageLimit);
+
+    if (!Number.isFinite(minOrder) || minOrder < 0) {
+      showToast("الحد الأدنى للطلب غير صحيح.");
+      return;
+    }
+
+    if (!Number.isFinite(maxDiscount) || maxDiscount < 0) {
+      showToast("الحد الأقصى للخصم غير صحيح.");
+      return;
+    }
+
+    if (!Number.isInteger(usageLimit) || usageLimit < 0) {
+      showToast("عدد مرات الاستخدام يجب أن يكون رقمًا صحيحًا.");
+      return;
+    }
+
+    if (couponExpiresOn && !/^\d{4}-\d{2}-\d{2}$/.test(couponExpiresOn)) {
+      showToast("تاريخ الانتهاء غير صحيح.");
+      return;
+    }
+
+    setSavingCoupon(true);
+
+    try {
+      await setDoc(
+        doc(db, "coupons", code),
+        {
+          type: couponType,
+          value: round2(value),
+          minOrder: round2(minOrder),
+          maxDiscount: couponType === "percent" ? round2(maxDiscount) : 0,
+          expiresOn: couponExpiresOn || "",
+          usageLimit,
+          active: couponActive,
+          ...(editingCouponCode === null ? { usedCount: 0 } : {}),
+        },
+        { merge: true }
+      );
+
+      showToast(
+        editingCouponCode === null
+          ? `تمت إضافة الكوبون ${code}.`
+          : `تم تحديث الكوبون ${code}.`,
+        "success"
+      );
+
+      clearCouponForm();
+    } catch (error) {
+      console.error("خطأ في حفظ الكوبون:", error);
+      showToast("تعذر حفظ الكوبون: " + (error.message || ""));
+    } finally {
+      setSavingCoupon(false);
+    }
+  }
+
+  async function toggleCoupon(coupon) {
+    if (!isAdmin) return;
+
+    try {
+      await updateDoc(doc(db, "coupons", coupon.code), {
+        active: coupon.active === false,
+      });
+    } catch (error) {
+      console.error("خطأ في تحديث الكوبون:", error);
+      showToast("تعذر تحديث الكوبون.");
+    }
+  }
+
+  async function deleteCoupon(coupon) {
+    if (!isAdmin) return;
+
+    if (!window.confirm(`هل أنت متأكد من حذف الكوبون ${coupon.code}؟`)) return;
+
+    try {
+      await deleteDoc(doc(db, "coupons", coupon.code));
+
+      if (editingCouponCode === coupon.code) clearCouponForm();
+    } catch (error) {
+      console.error("خطأ في حذف الكوبون:", error);
+      showToast("تعذر حذف الكوبون.");
+    }
+  }
+
   // فحص الطلب الجديد: هل الأسعار والإجمالي تطابق بيانات المتجر الحالية؟
   function getOrderIssues(order) {
     if (order.status !== "جديد") return [];
@@ -2473,18 +3020,57 @@ function App() {
     const issues = [];
     const items = order.items || [];
 
-    const computed =
-      Math.round(
-        items.reduce(
-          (sum, item) => sum + Number(item.price) * Number(item.quantity),
-          0
-        ) * 100
-      ) / 100;
+    const itemsSubtotal = round2(
+      items.reduce(
+        (sum, item) => sum + Number(item.price) * Number(item.quantity),
+        0
+      )
+    );
 
-    if (Math.abs(computed - Number(order.total)) > 0.01) {
+    const hasBreakdown = order.subtotal !== undefined;
+    const orderDiscount = hasBreakdown ? Number(order.discount) || 0 : 0;
+    const orderShipping = hasBreakdown ? Number(order.shippingFee) || 0 : 0;
+    const expectedTotal = round2(itemsSubtotal - orderDiscount + orderShipping);
+
+    if (Math.abs(expectedTotal - Number(order.total)) > 0.01) {
       issues.push(
-        `الإجمالي المسجّل (${formatPrice(order.total)}) لا يطابق مجموع الأصناف (${formatPrice(computed)})`
+        `الإجمالي المسجّل (${formatPrice(order.total)}) لا يطابق المحسوب من الأصناف والخصم والشحن (${formatPrice(expectedTotal)})`
       );
+    }
+
+    if (hasBreakdown) {
+      if (order.couponCode) {
+        const coupon = couponsList.find((entry) => entry.code === order.couponCode);
+
+        if (!coupon) {
+          issues.push(`الكوبون "${order.couponCode}" غير موجود في النظام`);
+        } else {
+          const expected = evaluateCoupon(
+            { ...coupon, active: true, expiresOn: "", usageLimit: 0 },
+            itemsSubtotal
+          );
+
+          if (Math.abs(expected.discount - orderDiscount) > 0.01) {
+            issues.push(
+              `خصم الكوبون المسجّل (${formatPrice(orderDiscount)}) يختلف عن المحسوب (${formatPrice(expected.discount)})`
+            );
+          }
+        }
+      } else if (orderDiscount > 0) {
+        issues.push("يوجد خصم في الطلب بدون كود كوبون");
+      }
+
+      const expectedShipping = computeShipping(
+        site,
+        itemsSubtotal - orderDiscount,
+        order.city
+      );
+
+      if (Math.abs(expectedShipping - orderShipping) > 0.01) {
+        issues.push(
+          `رسوم الشحن المسجّلة (${formatPrice(orderShipping)}) تختلف عن الرسوم الحالية (${formatPrice(expectedShipping)})`
+        );
+      }
     }
 
     for (const item of items) {
@@ -2516,7 +3102,7 @@ function App() {
   // إصدار فاتورة برقم تسلسلي (مرة واحدة لكل طلب) ثم عرضها للطباعة
   async function openInvoice(order) {
     if (!isAdmin) {
-      alert("غير مصرح لك بإدارة الفواتير.");
+      showToast("غير مصرح لك بإدارة الفواتير.");
       return;
     }
 
@@ -2557,7 +3143,7 @@ function App() {
       setInvoiceOrderId(order.id);
     } catch (error) {
       console.error("خطأ في إصدار الفاتورة:", error);
-      alert("تعذر إصدار الفاتورة: " + (error.message || "خطأ غير معروف"));
+      showToast("تعذر إصدار الفاتورة: " + (error.message || "خطأ غير معروف"));
     } finally {
       setIssuingInvoiceId(null);
     }
@@ -2768,6 +3354,7 @@ function App() {
                     ? `الطلبات (${newOrdersCount} جديد)`
                     : "الطلبات",
                 ],
+                ["shipping", "الشحن والكوبونات"],
                 ["invoices", "الفواتير"],
                 ["reports", "التقارير"],
                 ["site", "الموقع والبنرات"],
@@ -3261,9 +3848,38 @@ function App() {
                       gap: "10px",
                     }}
                   >
-                    <strong style={{ color: "#e8d29b" }}>
-                      الإجمالي: {formatPrice(order.total)} ر.س
-                    </strong>
+                    <div>
+                      {order.subtotal !== undefined && (
+                        <div
+                          style={{
+                            color: "#aaa59a",
+                            fontSize: "13px",
+                            lineHeight: 1.8,
+                            marginBottom: "4px",
+                          }}
+                        >
+                          <div>المجموع: {formatPrice(order.subtotal)} ر.س</div>
+
+                          {Number(order.discount) > 0 && (
+                            <div style={{ color: "#7fd39a" }}>
+                              خصم الكوبون ({order.couponCode}): -
+                              {formatPrice(order.discount)} ر.س
+                            </div>
+                          )}
+
+                          <div>
+                            الشحن{order.city ? ` إلى ${order.city}` : ""}:{" "}
+                            {Number(order.shippingFee) > 0
+                              ? `${formatPrice(order.shippingFee)} ر.س`
+                              : "مجاني"}
+                          </div>
+                        </div>
+                      )}
+
+                      <strong style={{ color: "#e8d29b" }}>
+                        الإجمالي: {formatPrice(order.total)} ر.س
+                      </strong>
+                    </div>
 
                     <div
                       style={{
@@ -3322,6 +3938,384 @@ function App() {
               )}
             </div>
               </>
+            )}
+
+            {adminTab === "shipping" && (
+              <div style={{ maxWidth: "760px", margin: "0 auto", color: "#f7f2e8" }}>
+                <h3 style={{ color: "#e8d29b", textAlign: "center" }}>رسوم الشحن</h3>
+
+                <form
+                  onSubmit={saveShippingSettings}
+                  style={{ display: "grid", gap: "14px", marginBottom: "50px" }}
+                >
+                  <label>
+                    رسوم الشحن الافتراضية (ر.س) — اكتب 0 للشحن المجاني
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={shipDefaultFee}
+                      onChange={(event) => setShipDefaultFee(event.target.value)}
+                      style={adminInputStyle}
+                    />
+                  </label>
+
+                  <label>
+                    شحن مجاني للطلبات التي تبلغ (ر.س) أو أكثر — اكتب 0 لتعطيله
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={shipFreeOver}
+                      onChange={(event) => setShipFreeOver(event.target.value)}
+                      style={adminInputStyle}
+                    />
+                  </label>
+
+                  <div style={{ border: "1px dashed #494131", padding: "14px" }}>
+                    <strong style={{ color: "#e8d29b" }}>
+                      الأسعار حسب المدينة (اختياري)
+                    </strong>
+
+                    <p style={{ color: "#aaa59a", margin: "6px 0 12px", fontSize: "14px" }}>
+                      إن أضفت مدنًا فسيختار العميل مدينته من القائمة وتُطبَّق رسومها.
+                      وإن تركتها فارغة تُطبَّق الرسوم الافتراضية على الجميع.
+                    </p>
+
+                    {shipCityRows.map((row, index) => (
+                      <div
+                        key={index}
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "1.5fr 1fr auto",
+                          gap: "8px",
+                          marginBottom: "8px",
+                        }}
+                      >
+                        <input
+                          value={row.name}
+                          onChange={(event) =>
+                            setShipCityRows((current) =>
+                              current.map((entry, rowIndex) =>
+                                rowIndex === index
+                                  ? { ...entry, name: event.target.value }
+                                  : entry
+                              )
+                            )
+                          }
+                          placeholder="اسم المدينة"
+                          style={{ ...adminInputStyle, marginTop: 0 }}
+                        />
+
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={row.fee}
+                          onChange={(event) =>
+                            setShipCityRows((current) =>
+                              current.map((entry, rowIndex) =>
+                                rowIndex === index
+                                  ? { ...entry, fee: event.target.value }
+                                  : entry
+                              )
+                            )
+                          }
+                          placeholder="الرسوم"
+                          style={{ ...adminInputStyle, marginTop: 0 }}
+                        />
+
+                        <button
+                          type="button"
+                          className="add-button"
+                          onClick={() =>
+                            setShipCityRows((current) =>
+                              current.filter((entry, rowIndex) => rowIndex !== index)
+                            )
+                          }
+                        >
+                          حذف
+                        </button>
+                      </div>
+                    ))}
+
+                    <button
+                      type="button"
+                      className="add-button"
+                      onClick={() =>
+                        setShipCityRows((current) => [
+                          ...current,
+                          { name: "", fee: "0" },
+                        ])
+                      }
+                    >
+                      ＋ إضافة مدينة
+                    </button>
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="checkout-button"
+                    disabled={savingShipping}
+                  >
+                    {savingShipping ? "جارٍ الحفظ..." : "حفظ إعدادات الشحن"}
+                  </button>
+                </form>
+
+                <h3 style={{ color: "#e8d29b", textAlign: "center" }}>
+                  أكواد الخصم ({couponsList.length})
+                </h3>
+
+                <form
+                  onSubmit={saveCoupon}
+                  style={{ display: "grid", gap: "14px", marginBottom: "30px" }}
+                >
+                  <label>
+                    الكود (أحرف أو أرقام بدون مسافات)
+                    <input
+                      value={couponCodeInput}
+                      onChange={(event) =>
+                        setCouponCodeInput(event.target.value.toUpperCase())
+                      }
+                      disabled={editingCouponCode !== null}
+                      maxLength={20}
+                      placeholder="مثال: WELCOME10"
+                      dir="ltr"
+                      style={adminInputStyle}
+                    />
+                  </label>
+
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+                      gap: "14px",
+                    }}
+                  >
+                    <label>
+                      نوع الخصم
+                      <select
+                        value={couponType}
+                        onChange={(event) => setCouponType(event.target.value)}
+                        style={adminInputStyle}
+                      >
+                        <option value="percent">نسبة مئوية (%)</option>
+                        <option value="fixed">مبلغ ثابت (ر.س)</option>
+                      </select>
+                    </label>
+
+                    <label>
+                      {couponType === "percent" ? "نسبة الخصم (%)" : "قيمة الخصم (ر.س)"}
+                      <input
+                        type="number"
+                        min="0.01"
+                        step="0.01"
+                        value={couponValue}
+                        onChange={(event) => setCouponValue(event.target.value)}
+                        style={adminInputStyle}
+                      />
+                    </label>
+                  </div>
+
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+                      gap: "14px",
+                    }}
+                  >
+                    <label>
+                      الحد الأدنى للطلب (اختياري)
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={couponMinOrder}
+                        onChange={(event) => setCouponMinOrder(event.target.value)}
+                        placeholder="بدون حد أدنى"
+                        style={adminInputStyle}
+                      />
+                    </label>
+
+                    {couponType === "percent" && (
+                      <label>
+                        أقصى مبلغ خصم (اختياري)
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={couponMaxDiscount}
+                          onChange={(event) =>
+                            setCouponMaxDiscount(event.target.value)
+                          }
+                          placeholder="بدون حد أقصى"
+                          style={adminInputStyle}
+                        />
+                      </label>
+                    )}
+
+                    <label>
+                      تاريخ الانتهاء (اختياري)
+                      <input
+                        type="date"
+                        value={couponExpiresOn}
+                        onChange={(event) => setCouponExpiresOn(event.target.value)}
+                        dir="ltr"
+                        style={adminInputStyle}
+                      />
+                    </label>
+
+                    <label>
+                      عدد مرات الاستخدام (اختياري)
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={couponUsageLimit}
+                        onChange={(event) => setCouponUsageLimit(event.target.value)}
+                        placeholder="غير محدود"
+                        style={adminInputStyle}
+                      />
+                    </label>
+                  </div>
+
+                  <label style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <input
+                      type="checkbox"
+                      checked={couponActive}
+                      onChange={(event) => setCouponActive(event.target.checked)}
+                    />
+                    الكوبون مفعّل
+                  </label>
+
+                  <button
+                    type="submit"
+                    className="checkout-button"
+                    disabled={savingCoupon}
+                  >
+                    {savingCoupon
+                      ? "جارٍ الحفظ..."
+                      : editingCouponCode !== null
+                        ? "حفظ التعديلات"
+                        : "＋ إضافة الكوبون"}
+                  </button>
+
+                  {editingCouponCode !== null && (
+                    <button
+                      type="button"
+                      className="add-button"
+                      onClick={clearCouponForm}
+                    >
+                      إلغاء التعديل
+                    </button>
+                  )}
+                </form>
+
+                <p style={{ color: "#aaa59a", fontSize: "13px", margin: "0 0 14px" }}>
+                  يُحتسب عدد الاستخدام عند نقل الطلب إلى "قيد التجهيز" أو ما بعده،
+                  ويُعاد عند الإلغاء أو الرجوع إلى "جديد".
+                </p>
+
+                {couponsList.map((coupon) => {
+                  const expired =
+                    coupon.expiresOn &&
+                    new Date(`${coupon.expiresOn}T23:59:59`) < new Date();
+                  const limit = Number(coupon.usageLimit) || 0;
+                  const used = Number(coupon.usedCount) || 0;
+                  const exhausted = limit > 0 && used >= limit;
+                  const status =
+                    coupon.active === false
+                      ? "متوقف"
+                      : expired
+                        ? "منتهي"
+                        : exhausted
+                          ? "مستنفد"
+                          : "فعّال";
+
+                  return (
+                    <div
+                      key={coupon.code}
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        flexWrap: "wrap",
+                        gap: "12px",
+                        padding: "14px 16px",
+                        marginBottom: "10px",
+                        border: "1px solid #494131",
+                        background: "#10100e",
+                        opacity: status === "فعّال" ? 1 : 0.6,
+                      }}
+                    >
+                      <div>
+                        <strong dir="ltr" style={{ color: "#e8d29b" }}>
+                          {coupon.code}
+                        </strong>{" "}
+                        <span
+                          style={{
+                            marginRight: "8px",
+                            padding: "2px 8px",
+                            fontSize: "12px",
+                            background: status === "فعّال" ? "#2f5d3f" : "#5d2f2f",
+                          }}
+                        >
+                          {status}
+                        </span>
+
+                        <div style={{ color: "#f7f2e8", margin: "4px 0" }}>
+                          {coupon.type === "fixed"
+                            ? `خصم ${formatPrice(coupon.value)} ر.س`
+                            : `خصم ${formatPrice(coupon.value)}٪${
+                                Number(coupon.maxDiscount) > 0
+                                  ? ` (حتى ${formatPrice(coupon.maxDiscount)} ر.س)`
+                                  : ""
+                              }`}
+                        </div>
+
+                        <div style={{ color: "#aaa59a", fontSize: "13px" }}>
+                          {Number(coupon.minOrder) > 0
+                            ? `الحد الأدنى ${formatPrice(coupon.minOrder)} ر.س • `
+                            : ""}
+                          {coupon.expiresOn ? `ينتهي ${coupon.expiresOn} • ` : ""}
+                          الاستخدام: {used}
+                          {limit > 0 ? ` / ${limit}` : " (غير محدود)"}
+                        </div>
+                      </div>
+
+                      <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                        <button
+                          type="button"
+                          className="add-button"
+                          onClick={() => editCoupon(coupon)}
+                        >
+                          تعديل
+                        </button>
+
+                        <button
+                          type="button"
+                          className="add-button"
+                          onClick={() => toggleCoupon(coupon)}
+                        >
+                          {coupon.active === false ? "تفعيل" : "إيقاف"}
+                        </button>
+
+                        <button
+                          type="button"
+                          className="add-button"
+                          onClick={() => deleteCoupon(coupon)}
+                        >
+                          حذف
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {couponsList.length === 0 && (
+                  <p className="empty-message">لا توجد أكواد خصم بعد.</p>
+                )}
+              </div>
             )}
 
             {adminTab === "invoices" && (
@@ -3561,6 +4555,14 @@ function App() {
                     value={`${formatMoney(report.average)} ر.س`}
                   />
                   <StatCard label="القطع المباعة" value={report.itemsSold} />
+                  <StatCard
+                    label="خصومات الكوبونات"
+                    value={`${formatMoney(report.discountsTotal)} ر.س`}
+                  />
+                  <StatCard
+                    label="رسوم الشحن المحصّلة"
+                    value={`${formatMoney(report.shippingTotal)} ر.س`}
+                  />
                   <StatCard
                     label="مقارنة بالشهر السابق"
                     value={
@@ -4457,9 +5459,123 @@ function App() {
                 ))}
               </div>
 
+              <div style={{ maxWidth: "600px", margin: "20px auto 0" }}>
+                {appliedCoupon ? (
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      flexWrap: "wrap",
+                      gap: "8px",
+                      padding: "10px 14px",
+                      border: `1px solid ${couponResult?.valid ? "#5fae7a" : "#d9684b"}`,
+                      background: "#10100e",
+                      color: "#f7f2e8",
+                    }}
+                  >
+                    <span>
+                      🏷️ الكوبون <strong dir="ltr">{appliedCoupon.code}</strong>{" "}
+                      {couponResult?.valid ? (
+                        <span style={{ color: "#7fd39a" }}>
+                          مفعّل (-{formatPrice(couponDiscount)} ر.س)
+                        </span>
+                      ) : (
+                        <span style={{ color: "#ff9b80" }}>
+                          {couponResult?.message}
+                        </span>
+                      )}
+                    </span>
+
+                    <button
+                      type="button"
+                      className="add-button"
+                      onClick={() => setAppliedCoupon(null)}
+                    >
+                      إزالة
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", gap: "8px" }}>
+                    <input
+                      value={couponInput}
+                      onChange={(event) => setCouponInput(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          applyCoupon();
+                        }
+                      }}
+                      placeholder="هل لديك كود خصم؟"
+                      dir="ltr"
+                      maxLength={20}
+                      style={{ ...adminInputStyle, marginTop: 0, flex: 1 }}
+                    />
+
+                    <button
+                      type="button"
+                      className="add-button"
+                      disabled={checkingCoupon}
+                      onClick={applyCoupon}
+                    >
+                      {checkingCoupon ? "..." : "تطبيق"}
+                    </button>
+                  </div>
+                )}
+
+                <div
+                  style={{
+                    margin: "16px 0 4px",
+                    display: "grid",
+                    gap: "6px",
+                    color: "#aaa59a",
+                    fontSize: "15px",
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span>المجموع</span>
+                    <span>{formatPrice(cartSubtotal)} ر.س</span>
+                  </div>
+
+                  {couponDiscount > 0 && (
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        color: "#7fd39a",
+                      }}
+                    >
+                      <span>خصم الكوبون</span>
+                      <span>-{formatPrice(couponDiscount)} ر.س</span>
+                    </div>
+                  )}
+
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span>
+                      الشحن
+                      {shippingCities.length > 0 && !customerCity
+                        ? " (اختر المدينة)"
+                        : ""}
+                    </span>
+                    <span>
+                      {cartShipping > 0
+                        ? `${formatPrice(cartShipping)} ر.س`
+                        : "مجاني"}
+                    </span>
+                  </div>
+
+                  {freeShippingGap > 0 && (
+                    <small style={{ color: "#e8d29b" }}>
+                      أضف منتجات بقيمة {formatPrice(freeShippingGap)} ر.س للحصول على
+                      شحن مجاني 🚚
+                    </small>
+                  )}
+                </div>
+              </div>
+
               <div className="cart-total">
                 <span>الإجمالي</span>
-                <strong>{formatPrice(total)} ر.س</strong>
+                <strong>{formatPrice(grandTotal)} ر.س</strong>
               </div>
 
               <div
@@ -4492,6 +5608,27 @@ function App() {
                     style={adminInputStyle}
                   />
                 </label>
+
+                {shippingCities.length > 0 && (
+                  <label>
+                    المدينة
+                    <select
+                      value={customerCity}
+                      onChange={(event) => setCustomerCity(event.target.value)}
+                      style={adminInputStyle}
+                    >
+                      <option value="">اختر المدينة</option>
+                      {shippingCities.map((entry) => (
+                        <option key={entry.name} value={entry.name}>
+                          {entry.name} —{" "}
+                          {Number(entry.fee) > 0
+                            ? `${formatPrice(entry.fee)} ر.س`
+                            : "شحن مجاني"}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
 
                 <label>
                   عنوان التوصيل
